@@ -84,7 +84,8 @@ public class Cpp11Util
      */
     public static String formatPropertyName(final String str)
     {
-        return toLowerFirstChar(str);
+        return (str.length() > 1 && Character.isUpperCase(str.charAt(1)))
+             ? str : toLowerFirstChar(str);
     }
 
     /**
