@@ -31,6 +31,7 @@ import uk.co.real_logic.sbe.generation.python.PythonGenerator;
 import uk.co.real_logic.sbe.ir.Ir;
 
 import java.io.IOException;
+import java.io.*;
 
 /**
  * Target a code generator for a given language.
@@ -77,10 +78,22 @@ public enum TargetCodeGenerator
 
     CPP11()
         {
+            private String addSeparator(final String dir)
+            {
+                return dir == null ? "" :
+                       dir.endsWith("" + File.separatorChar) ? dir : dir + File.separatorChar;
+            }
+
             public CodeGenerator newInstance(final Ir ir, final String outputDir)
                 throws IOException
             {
-                return new Cpp11Generator(ir, new NamespaceOutputManager11(outputDir, ir.applicableNamespace()));
+                final String dir1 = System.getProperty("sbe.target.namespace0");
+                final String dir2 = ir.applicableNamespace().replace('.', '_');
+                final String dir3 = System.getProperty("sbe.output.subdir");
+                final String dir  = addSeparator(dir1) + addSeparator(dir2) +
+                                    (dir3 == null ?  "" : dir3);
+                return new Cpp11Generator(
+                    ir, dir, new NamespaceOutputManager11(outputDir, dir));
             }
         },
 

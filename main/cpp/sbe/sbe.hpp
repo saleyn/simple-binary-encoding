@@ -74,6 +74,15 @@ namespace sbe {
     #define SBE_BOUNDS_CHECK_EXPECT(exp,c) (__builtin_expect(exp,c))
 #endif
 
+#ifdef _SBE_CPP11_GENERATOR_
+enum class meta_attr
+{
+    EPOCH,
+    TIME_UNIT,
+    SEMANTIC_TYPE
+};
+
+#else
 class MetaAttribute
 {
 public:
@@ -84,6 +93,8 @@ public:
         SEMANTIC_TYPE
     };
 };
+
+#endif
 
 }
 

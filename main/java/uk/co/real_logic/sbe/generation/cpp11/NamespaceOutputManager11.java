@@ -32,18 +32,19 @@ public class NamespaceOutputManager11 implements OutputManager
      * Create a new {@link uk.co.real_logic.agrona.generation.OutputManager} for generating C++11 source files into a given package.
      *
      * @param baseDirectoryName for the generated source code.
-     * @param namespaceName for the generated source code relative to the baseDirectoryName.
+     * @param subdir under baseDirectoryName for the generated source code (optional).
      * @throws IOException if an error occurs during output
      */
-    public NamespaceOutputManager11(final String baseDirectoryName, final String namespaceName)
+    public NamespaceOutputManager11(final String baseDirectoryName, final String subdir)
         throws IOException
     {
         Verify.notNull(baseDirectoryName, "baseDirectoryName");
-        Verify.notNull(namespaceName, "applicableNamespace");
+        Verify.notNull(subdir, "subdir");
 
         final String dirName =
-            (baseDirectoryName.endsWith("" + File.separatorChar) ? baseDirectoryName : baseDirectoryName + File.separatorChar) +
-            namespaceName.replace('.', '_');
+            (baseDirectoryName.endsWith("" + File.separatorChar)
+                ? baseDirectoryName : baseDirectoryName + File.separatorChar) +
+            subdir;
 
         outputDir = new File(dirName);
         if (!outputDir.exists())
