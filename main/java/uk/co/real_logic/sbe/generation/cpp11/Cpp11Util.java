@@ -206,7 +206,7 @@ public class Cpp11Util
 
     static enum FieldType
     {
-        UNDEFINED, SIMPLE, COMPOSITE, ENUM, SET, GROUP
+        UNDEFINED, SIMPLE, COMPOSITE, ENUM, SET, GROUP, VAR_DATA
     }
 
     static class Node
@@ -231,6 +231,7 @@ public class Cpp11Util
                 case BEGIN_SET:       type = FieldType.SET;       break;
                 case BEGIN_COMPOSITE: type = FieldType.COMPOSITE; break;
                 case BEGIN_GROUP:     type = FieldType.GROUP;     break;
+                case BEGIN_VAR_DATA:  type = FieldType.VAR_DATA;  break;
                 default:              type = FieldType.UNDEFINED; break;
             }
 

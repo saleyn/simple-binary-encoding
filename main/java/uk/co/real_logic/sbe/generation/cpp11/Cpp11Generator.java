@@ -46,7 +46,7 @@ public class Cpp11Generator implements CodeGenerator
     private static final String INDENT = "    ";
     private static final int    TAG_PRINT_WIDTH  = 5;
     private static final int    NAME_PRINT_WIDTH = 30;
-    private static final int    TYPE_PRINT_WIDTH = 23;
+    private static final int    TYPE_PRINT_WIDTH = 20;
 
     private final Ir ir;
     private final OutputManager outputManager;
@@ -198,7 +198,7 @@ public class Cpp11Generator implements CodeGenerator
                 out.append(sb);
 
                 final List<Token> varData = messageBody.subList(offset, messageBody.size());
-                out.append(generateVarData(varData));
+                out.append(generateVarData(varData, fields));
 
                 out.append(generateStreamPrint(false, className, fields, BASE_INDENT));
 
@@ -317,7 +317,7 @@ public class Cpp11Generator implements CodeGenerator
             indent + "        m_dimensions.Wrap(m_buf, *pos, vsn, bufsz);\n" +
             indent + "        m_block_len  = m_dimensions.block_length();\n" +
             indent + "        m_count      = m_dimensions.num_in_group();\n" +
-            indent + "        m_index      = -1;\n" +
+            indent + "        m_index      = 0;\n" +
             indent + "        m_version    = vsn;\n" +
             indent + "        m_pos_ptr    = pos;\n" +
             indent + "        *m_pos_ptr   = *m_pos_ptr + %1$d;\n" +
@@ -337,7 +337,7 @@ public class Cpp11Generator implements CodeGenerator
             indent + "        m_buf_size  = bufsz;\n" +
             indent + "        m_block_len = %2$d;\n" +
             indent + "        m_count     = count;\n" +
-            indent + "        m_index     = -1;\n" +
+            indent + "        m_index     = 0;\n" +
             indent + "        m_version   = vsn;\n" +
             indent + "        m_dimensions.Wrap(m_buf, *pos, vsn, bufsz);\n" +
             indent + "        m_dimensions.block_length((%1$s)%2$d);\n" +
@@ -352,15 +352,16 @@ public class Cpp11Generator implements CodeGenerator
             indent + "    static const char* Name()          { return \"%1$s\"; }\n" +
             indent + "    static const int   HeaderSize()    { return %2$d; }\n" +
             indent + "    static const int   BlockLen()      { return %3$d; }\n\n" +
+            indent + "    int                Index()   const { return m_index; }\n" +
             indent + "    int                Count()   const { return m_count; }\n" +
-            indent + "    bool               HasNext() const { return m_index + 1 < m_count; }\n",
+            indent + "    bool               HasNext() const { return m_index < m_count; }\n",
             groupName,
             dimensionHeaderSize,
             blockLen
         ));
 
         sb.append(String.format(
-            indent + "    %1$s& Next()          {\n" +
+            indent + "    const %1$s& Next() const {\n" +
             indent + "        m_offset = *m_pos_ptr;\n" +
             indent + "        if (SBE_BOUNDS_CHECK_EXPECT(( (m_offset + m_block_len) > long(m_buf_size) ),0))\n" +
             indent + "            throw std::runtime_error(\"buffer too short to support next group index [E108]\");\n" +
@@ -425,7 +426,7 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateVarData(final List<Token> tokens)
+    private CharSequence generateVarData(final List<Token> tokens, final NodeList fields)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -434,11 +435,13 @@ public class Cpp11Generator implements CodeGenerator
             final Token token = tokens.get(i);
             if (token.signal() == Signal.BEGIN_VAR_DATA)
             {
-                final String propertyName = toUpperFirstChar(token.name());
+                final String      propertyName = toUpperFirstChar(token.name());
                 final String characterEncoding = tokens.get(i + 3).encoding().characterEncoding();
-                final Token lengthToken = tokens.get(i + 2);
-                final Integer lenFldSz = Integer.valueOf(lengthToken.size());
-                final String lengthCpp11Type = cpp11TypeName(lengthToken);
+                final Token        lengthToken = tokens.get(i + 2);
+                final int             lenFldSz = lengthToken.size();
+                final String   lengthCpp11Type = cpp11TypeName(lengthToken);
+
+                fields.add(propertyName, token);
 
                 generateFieldMetaAttributeMethod(sb, token, BASE_INDENT);
 
@@ -641,23 +644,16 @@ public class Cpp11Generator implements CodeGenerator
     private CharSequence generateStreamPrint(boolean isGroup, final String name, final NodeList fields, final String indent)
     {
         final StringBuilder sb = new StringBuilder();
+
         sb.append(String.format(
             indent + "    // Print method for %1$s %2$s\n" +
             indent + "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n",
             name, isGroup ? "group" : "message"));
 
-        if (isGroup)
-        {
-            sb.append(String.format(
-                indent + "        out << a.Name()     << \" - (hdrsz=\" << a.HeaderSize()   << \", blen=\"\n" +
-                indent + "            << a.BlockLen() << \", count=\"   << a.Count() << ')' << std::endl;\n",
-                name
-            ));
-        }
-        else
+        if (!isGroup)
         {
             sb.append(indent);
-            sb.append("        out << a.Name()    << \" (\" << a.SemanticType() << \") {sz=\" << a.BufSize()\n");
+            sb.append("        out << a.Name()  << \" (\" << a.SemanticType() << \") {sz=\"    << a.BufSize()\n");
             sb.append(indent);
             sb.append("            << \", blen=\" << a.BlockLen() << \", ver=\" << a.Version() << \"}\\n\";\n");
         }
@@ -667,27 +663,46 @@ public class Cpp11Generator implements CodeGenerator
             final String uname = uncamelName(node.name);
 
             sb.append(String.format(
-                indent + "        out << std::setw(%1$3d) << a.%2$s_tag()    << ' ';\n" +
-                indent + "        out << std::setw(%3d) << a.%2$s_offset() << ' ';\n",
+                indent + "        out << '|' << std::setw(%1$3d) << std::right << a.%2$s_tag() << std::left;\n" +
+                indent + "        out << '|' << std::setw( 5) << a.%2$s_offset() << std::right << '|';\n",
                 TAG_PRINT_WIDTH,
                 uname
             ));
+
             if (node.type == FieldType.GROUP)
             {
-                int pad = NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - node.name.length() - 1;
                 sb.append(String.format(
-                    indent + "        out << \"%1$s\" << std::setw(%2$3d);\n" +
-                    indent + "        out << a.%3$s() << std::endl;\n",
-                    String.format("%" + pad + "s", " ").replace(' ', '-'),
-                    node.name.length() + 1,
+                    indent + "        out << \"==[ group ]\" << std::string(%4$d-11, '=') << '|' << std::string(%5$d-%6$d, '=');\n" +
+                    indent + "        out << \"[ \" << a.%7$s_name() << \" ]\\n\";\n" +
+                    indent + "        {\n" +
+                    indent + "            auto& g = a.%7$s();\n" +
+                    indent + "            while (g.HasNext()) {\n" +
+                    indent + "                g.Next();\n" +
+                    indent + "                out << '|' << std::setw(%3$d) << ' ';\n" +
+                    indent + "                out << '|' << std::setw(6) << '|';\n" +
+                    indent + "                out << \"--[\" << std::setw(3) << std::right;\n" +
+                    indent + "                out << g.Index()    << '/' << std::setw(3) << std::left;\n" +
+                    indent + "                out << g.Count()    << ']' << std::string(%4$d-11, '-');\n" +
+                    indent + "                out << '|' << std::right << std::string(%5$d-%6$d, '-') << \"[ \";\n" +
+                    indent + "                out << g.Name()     << \" ] (hdrsz=\" << g.HeaderSize() << \", blen=\"\n" +
+                    indent + "                    << g.BlockLen() << ')' << std::endl;\n" +
+                    indent + "                out << g;\n" +
+                    indent + "            }\n" +
+                    indent + "        }\n",
+                    NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - 13,
+                    NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - uname.length() - 13,
+                    TAG_PRINT_WIDTH,
+                    TYPE_PRINT_WIDTH,
+                    NAME_PRINT_WIDTH,
+                    uname.length(),
                     uname
                 ));
             }
             else
             {
                 sb.append(String.format(
-                    indent + "        out << std::setw(%1$3d) << a.%3$s_meta(MetaAttr::SEMANTIC_TYPE);\n" +
-                    indent + "        out << std::setw(%2$3d) << \"%4$s\";\n" +
+                    indent + "        out << std::left  << std::setw(%1$3d) << a.%3$s_meta(MetaAttr::SEMANTIC_TYPE) << '|';\n" +
+                    indent + "        out << std::right << std::setw(%2$3d) << \"%4$s\";\n" +
                     indent + "        out << \" = \"; %5$s << std::endl;\n",
                     TYPE_PRINT_WIDTH,
                     NAME_PRINT_WIDTH,
@@ -698,7 +713,8 @@ public class Cpp11Generator implements CodeGenerator
             }
         }
 
-        sb.append(indent).append("    }\n\n");
+        sb.append(indent).append("        return out;\n")
+          .append(indent).append("    }\n\n");
         return sb;
     }
 
@@ -1063,8 +1079,8 @@ public class Cpp11Generator implements CodeGenerator
                 "template <class CastT, class T>\n" +
                 "inline std::ostream& ValOrNull(std::ostream& out, const T& a, const T& null) {\n" +
                 "    if      (a == null)                     out << \"<null>\";\n" +
-                "    else if (std::is_same<T, CastT>::value) out << (CastT)a;\n" +
-                "    else                                    out << a;\n" +
+                "    else if (std::is_same<T, CastT>::value) out << a;\n" +
+                "    else                                    out << (CastT)a;\n" +
                 "    return out;\n" +
                 "}\n\n",
                 namespace
@@ -1571,7 +1587,7 @@ public class Cpp11Generator implements CodeGenerator
     }
 
     private CharSequence generateFields(final String containingClassName,
-        final List<Token> tokens, final String indent, NodeList fields)
+        final List<Token> tokens, final String indent, final NodeList fields)
     {
         final StringBuilder sb = new StringBuilder();
 
