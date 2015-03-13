@@ -11,8 +11,8 @@
     <property name="module.name" value="sbe"/>
     <property name="module.name.android" value="sbe-android"/>
 
-    <property name="ant.build.javac.source" value="1.7" />
-    <property name="ant.build.javac.target" value="1.7" />
+    <property name="ant.build.javac.source" value="1.8" />
+    <property name="ant.build.javac.target" value="1.8" />
 
     <property name="dir.main.src" location="main/java"/>
     <property name="dir.main.build" location="target/main/java/classes"/>

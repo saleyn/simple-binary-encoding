@@ -17,26 +17,21 @@
 #define _SBE_HPP_
 
 #include <string.h>
-#include <stdint.h>
-#include <limits.h>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 
-/*
- * Types used by C++ codec. Might have to be platform specific at some stage.
- */
-typedef char sbe_char_t;
-typedef ::int8_t sbe_int8_t;
-typedef ::int16_t sbe_int16_t;
-typedef ::int32_t sbe_int32_t;
-typedef ::int64_t sbe_int64_t;
-typedef ::uint8_t sbe_uint8_t;
-typedef ::uint16_t sbe_uint16_t;
-typedef ::uint32_t sbe_uint32_t;
-typedef ::uint64_t sbe_uint64_t;
-typedef float sbe_float_t;
-typedef double sbe_double_t;
-
 namespace sbe {
+
+using std::size_t;
+using std::int8_t;
+using std::int16_t;
+using std::int32_t;
+using std::int64_t;
+using std::uint8_t;
+using std::uint16_t;
+using std::uint32_t;
+using std::uint64_t;
 
 /*
  * Define some byte ordering macros
@@ -75,7 +70,7 @@ namespace sbe {
 #endif
 
 #ifdef _SBE_CPP11_GENERATOR_
-enum class meta_attr
+enum class MetaAttr
 {
     EPOCH,
     TIME_UNIT,

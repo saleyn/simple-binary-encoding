@@ -1,4 +1,5 @@
 /*
+ * Copyright 2015 Omnibius, LLC
  * Copyright 2013 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,16 +27,26 @@ import uk.co.real_logic.agrona.Verify;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.Calendar;
 import java.util.List;
+import java.util.Collections;
+import java.util.stream.Collectors;
 
 import static uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.*;
+import uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.NodeList;
+import uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.Node;
+import uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.FieldType;
 
 public class Cpp11Generator implements CodeGenerator
 {
     private static final String BASE_INDENT = "";
     private static final String INDENT = "    ";
+    private static final int    TAG_PRINT_WIDTH  = 5;
+    private static final int    NAME_PRINT_WIDTH = 30;
+    private static final int    TYPE_PRINT_WIDTH = 23;
 
     private final Ir ir;
     private final OutputManager outputManager;
@@ -150,8 +161,9 @@ public class Cpp11Generator implements CodeGenerator
     public void generate() throws IOException
     {
         generateMessageHeaderStub();
-        final List<String> typesToInclude = generateTypeStubs();
         final String namespace = ir.applicableNamespace().replace('.', '_');
+        final List<String> typesToInclude = generateTypeStubs();
+        typesToInclude.add("<iomanip>");
 
         generateSbeMainInclude(namespace);
 
@@ -174,19 +186,23 @@ public class Cpp11Generator implements CodeGenerator
                 int offset = 0;
 
                 final List<Token> rootFields = new ArrayList<>();
+                final NodeList fields = new NodeList();
+
                 offset = collectRootFields(messageBody, offset, rootFields);
-                out.append(generateFields(className, rootFields, BASE_INDENT));
+                out.append(generateFields(className, rootFields, BASE_INDENT, fields));
 
                 final List<Token> groups = new ArrayList<>();
                 offset = collectGroups(messageBody, offset, groups);
                 StringBuilder sb = new StringBuilder();
-                generateGroups(sb, groups, 0, BASE_INDENT);
+                generateGroups(sb, groups, 0, BASE_INDENT, fields);
                 out.append(sb);
 
                 final List<Token> varData = messageBody.subList(offset, messageBody.size());
                 out.append(generateVarData(varData));
 
-                out.append("};\n");
+                out.append(generateStreamPrint(false, className, fields, BASE_INDENT));
+
+                out.append(String.format("}; // %s\n", className));
                 fileEndIfdef(out, className, true);
             }
         }
@@ -231,7 +247,8 @@ public class Cpp11Generator implements CodeGenerator
         return index;
     }
 
-    private int generateGroups(final StringBuilder sb, final List<Token> tokens, int index, final String indent)
+    private int generateGroups(final StringBuilder sb, final List<Token> tokens, int index,
+        final String indent, final NodeList fields)
     {
         for (int size = tokens.size(); index < size; index++)
         {
@@ -240,19 +257,28 @@ public class Cpp11Generator implements CodeGenerator
                 final Token groupToken = tokens.get(index);
                 final String groupName = groupToken.name();
 
+                if (fields != null)
+                {
+                    fields.add(groupToken);
+                }
+
                 generateGroupClassHeader(sb, groupName, tokens, index, indent + INDENT);
 
                 final List<Token> rootFields = new ArrayList<>();
+                final NodeList groupFields = new NodeList();
                 index = collectRootFields(tokens, ++index, rootFields);
-                sb.append(generateFields(groupName, rootFields, indent + INDENT));
+                sb.append(generateFields(groupName, rootFields, indent + INDENT, groupFields));
 
                 if (tokens.get(index).signal() == Signal.BEGIN_GROUP)
                 {
-                    index = generateGroups(sb, tokens, index, indent + INDENT);
+                    index = generateGroups(sb, tokens, index, indent + INDENT, null);
                 }
 
+                sb.append(generateStreamPrint(
+                              true, groupName, groupFields, indent + INDENT
+                          ));
                 sb.append(indent).append("    };\n");
-                sb.append(generateGroupProperty(groupName, groupToken, indent));
+                sb.append(generateGroupProperty(groupName, groupToken, indent, groupFields));
             }
         }
 
@@ -262,83 +288,81 @@ public class Cpp11Generator implements CodeGenerator
     private void generateGroupClassHeader(
         final StringBuilder sb, final String groupName, final List<Token> tokens, final int index, final String indent)
     {
-        final String dimensionsClassName = formatClassName(tokens.get(index + 1).name());
+        final String  dimensionsClassName = formatClassName(tokens.get(index + 1).name());
         final Integer dimensionHeaderSize = Integer.valueOf(tokens.get(index + 1).size());
 
         sb.append(String.format(
             "\n" +
             indent + "class %1$s {\n" +
             indent + "private:\n" +
-            indent + "    char* m_buf;\n" +
-            indent + "    int   m_buf_len;\n" +
-            indent + "    int*  m_pos_ptr;\n" +
-            indent + "    int   m_block_len;\n" +
-            indent + "    int   m_count;\n" +
-            indent + "    int   m_index;\n" +
-            indent + "    int   m_offset;\n" +
-            indent + "    int   m_version;\n" +
-            indent + "    %2$s m_dimensions;\n\n" +
+            indent + "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
+            indent + "    mutable char*  m_buf;\n" +
+            indent + "    mutable size_t m_buf_size;\n" +
+            indent + "    mutable int    m_block_len;\n" +
+            indent + "    mutable int    m_count;\n" +
+            indent + "    mutable int    m_index;\n" +
+            indent + "    mutable int    m_version;\n" +
+            indent + "    mutable int*   m_pos_ptr;\n" +
+            indent + "    mutable int    m_offset;\n" +
+            indent + "    mutable %2$s m_dimensions;\n\n" +
             indent + "public:\n\n",
             formatClassName(groupName),
             dimensionsClassName
         ));
 
         sb.append(String.format(
-            indent + "    void wrap_for_decode(char* buffer, int* pos, const int vsn, const int buflen) {\n" +
-            indent + "        m_buf        = buffer;\n" +
-            indent + "        m_buf_len    = buflen;\n" +
-            indent + "        m_dimensions.wrap(m_buf, *pos, vsn, buflen);\n" +
+            indent + "    void WrapForDecode(const char* buffer, int* pos, int vsn, int bufsz) const {\n" +
+            indent + "        m_buf        = const_cast<char*>(buffer);\n" +
+            indent + "        m_buf_size   = bufsz;\n" +
+            indent + "        m_dimensions.Wrap(m_buf, *pos, vsn, bufsz);\n" +
             indent + "        m_block_len  = m_dimensions.block_length();\n" +
             indent + "        m_count      = m_dimensions.num_in_group();\n" +
             indent + "        m_index      = -1;\n" +
             indent + "        m_version    = vsn;\n" +
             indent + "        m_pos_ptr    = pos;\n" +
             indent + "        *m_pos_ptr   = *m_pos_ptr + %1$d;\n" +
+            indent + "        m_offset     = *m_pos_ptr;\n" +
             indent + "    }\n\n",
             dimensionHeaderSize
         ));
 
-        final Integer blockLen = Integer.valueOf(tokens.get(index).size());
-        final String cpp11TypeForBlockLength = cpp11TypeName(tokens.get(index + 2).encoding().primitiveType());
-        final String cpp11TypeForNumInGroup = cpp11TypeName(tokens.get(index + 3).encoding().primitiveType());
+        final Integer blockLen        = Integer.valueOf(tokens.get(index).size());
+        final String  typeForBlkLen   = cpp11TypeName(tokens.get(index + 2));
+        final String  typeForNumInGrp = cpp11TypeName(tokens.get(index + 3));
 
         sb.append(String.format(
-            indent + "    void wrap_for_encode(char* buffer, const int count,\n" +
-            indent + "                         int* pos, const int vsn, const int buflen) {\n" +
+            indent + "    void WrapForEncode(char* buffer, int count,\n" +
+            indent + "                       int*  pos,    int vsn, int bufsz) {\n" +
             indent + "        m_buf       = buffer;\n" +
-            indent + "        m_buf_len   = buflen;\n" +
-            indent + "        m_dimensions.wrap(m_buf, *pos, vsn, buflen);\n" +
+            indent + "        m_buf_size  = bufsz;\n" +
+            indent + "        m_block_len = %2$d;\n" +
+            indent + "        m_count     = count;\n" +
+            indent + "        m_index     = -1;\n" +
+            indent + "        m_version   = vsn;\n" +
+            indent + "        m_dimensions.Wrap(m_buf, *pos, vsn, bufsz);\n" +
             indent + "        m_dimensions.block_length((%1$s)%2$d);\n" +
             indent + "        m_dimensions.num_in_group((%3$s)count);\n" +
-            indent + "        m_index     = -1;\n" +
-            indent + "        m_count     = count;\n" +
-            indent + "        m_block_len = %2$d;\n" +
-            indent + "        m_version   = vsn;\n" +
             indent + "        m_pos_ptr   = pos;\n" +
             indent + "        *m_pos_ptr  = *m_pos_ptr + %4$d;\n" +
             indent + "    }\n\n",
-            cpp11TypeForBlockLength, blockLen, cpp11TypeForNumInGroup, dimensionHeaderSize
+            typeForBlkLen, blockLen, typeForNumInGrp, dimensionHeaderSize
         ));
 
         sb.append(String.format(
-            indent + "    static const int sbe_header_size() { return %d; }\n\n",
-            dimensionHeaderSize
-        ));
-
-        sb.append(String.format(
-            indent + "    static const int sbe_block_len() { return %d; }\n\n",
+            indent + "    static const char* Name()          { return \"%1$s\"; }\n" +
+            indent + "    static const int   HeaderSize()    { return %2$d; }\n" +
+            indent + "    static const int   BlockLen()      { return %3$d; }\n\n" +
+            indent + "    int                Count()   const { return m_count; }\n" +
+            indent + "    bool               HasNext() const { return m_index + 1 < m_count; }\n",
+            groupName,
+            dimensionHeaderSize,
             blockLen
         ));
 
         sb.append(String.format(
-            indent + "    int  count()    const { return m_count; }\n\n" +
-            indent + "    bool has_next() const { return m_index + 1 < m_count; }\n\n"
-        ));
-
-        sb.append(String.format(
-            indent + "    %1$s& next() {\n" +
+            indent + "    %1$s& Next()          {\n" +
             indent + "        m_offset = *m_pos_ptr;\n" +
-            indent + "        if (SBE_BOUNDS_CHECK_EXPECT(( (m_offset + m_block_len) > m_buf_len ),0))\n" +
+            indent + "        if (SBE_BOUNDS_CHECK_EXPECT(( (m_offset + m_block_len) > long(m_buf_size) ),0))\n" +
             indent + "            throw std::runtime_error(\"buffer too short to support next group index [E108]\");\n" +
             indent + "        *m_pos_ptr = m_offset + m_block_len;\n" +
             indent + "        ++m_index;\n\n" +
@@ -348,7 +372,8 @@ public class Cpp11Generator implements CodeGenerator
         ));
     }
 
-    private CharSequence generateGroupProperty(final String groupName, final Token token, final String indent)
+    private CharSequence generateGroupProperty(final String groupName, final Token token,
+        final String indent, final NodeList fields)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -357,24 +382,28 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "\n" +
-            "private:\n" +
+            indent + "private:\n" +
             indent + "    %1$s m_%2$s;\n\n" +
-            "public:\n",
+            indent + "public:\n",
             className,
             uncamelName(propertyName)
         ));
 
         sb.append(String.format(
             "\n" +
-            indent + "    static const int %1$s_id() { return %2$d; }\n\n",
+            indent + "    static const char* %2$s_name()         { return \"%1$s\"; }\n" +
+            indent + "    static const int   %2$s_tag()          { return %3$d; }\n" +
+            indent + "    int                %2$s_offset() const { return m_offset + %4$d; }\n\n",
+            groupName,
             uncamelName(groupName),
-            Long.valueOf(token.id())
+            token.id(),
+            token.offset()
         ));
 
         sb.append(String.format(
             "\n" +
-            indent + "    %1$s& %2$s() {\n" +
-            indent + "        m_%2$s.wrap_for_decode(m_buf, m_pos_ptr, m_version, m_buf_len);\n" +
+            indent + "    const %1$s& %2$s() const {\n" +
+            indent + "        m_%2$s.WrapForDecode(m_buf, m_pos_ptr, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n",
             className,
@@ -384,12 +413,14 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    %1$s& %2$s_count(int count) {\n" +
-            indent + "        m_%2$s.wrap_for_encode(m_buf, count, m_pos_ptr, m_version, m_buf_len);\n" +
+            indent + "        m_%2$s.WrapForEncode(m_buf, count, m_pos_ptr, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n",
             className,
             uncamelName(propertyName)
         ));
+
+        fields.add(propertyName, token);
 
         return sb;
     }
@@ -406,60 +437,60 @@ public class Cpp11Generator implements CodeGenerator
                 final String propertyName = toUpperFirstChar(token.name());
                 final String characterEncoding = tokens.get(i + 3).encoding().characterEncoding();
                 final Token lengthToken = tokens.get(i + 2);
-                final Integer sizeOfLengthField = Integer.valueOf(lengthToken.size());
-                final String lengthCpp11Type = cpp11TypeName(lengthToken.encoding().primitiveType());
+                final Integer lenFldSz = Integer.valueOf(lengthToken.size());
+                final String lengthCpp11Type = cpp11TypeName(lengthToken);
 
                 generateFieldMetaAttributeMethod(sb, token, BASE_INDENT);
 
                 generateVarDataDescriptors(
-                    sb, token, propertyName, characterEncoding, lengthToken, sizeOfLengthField, lengthCpp11Type);
+                    sb, token, propertyName, characterEncoding, lengthToken, lenFldSz, lengthCpp11Type);
 
                 sb.append(String.format(
                     "    const char* %1$s() {\n" +
                              "%2$s" +
-                    "         const char* p = (m_buf + position() + %3$d);\n" +
-                    "         position(position() + %3$d + *((%4$s *)(m_buf + position())));\n" +
+                    "         const char* p = (m_buf + Position() + %3$d);\n" +
+                    "         Position(Position() + %3$d + *((%4$s *)(m_buf + Position())));\n" +
                     "         return p;\n" +
                     "    }\n\n",
                     uncamelName(formatPropertyName(propertyName)),
                     generateTypeFieldNotPresentCondition(token.version(), BASE_INDENT),
-                    sizeOfLengthField,
+                    lenFldSz,
                     lengthCpp11Type
                 ));
 
                 sb.append(String.format(
-                    "    int get_%1$s(char* dst, const int length) {\n" +
+                    "    int get_%1$s(char* dst, long len) {\n" +
                             "%2$s" +
-                    "        auto sizeOfLengthField  = %3$d;\n" +
-                    "        auto lengthPosition     = position();\n" +
-                    "        position(lengthPosition + sizeOfLengthField);\n" +
-                    "        auto dataLength         = %4$s(*((%5$s *)(m_buf + lengthPosition)));\n" +
-                    "        int  bytesToCopy        = (length < dataLength) ? length : dataLength;\n" +
-                    "        auto pos                = position();\n" +
-                    "        position(position()     + (sbe_uint64_t)dataLength);\n" +
-                    "        ::memcpy(dst, m_buf  + pos, bytesToCopy);\n" +
+                    "        auto lenFldSz        = %3$d;\n" +
+                    "        auto lenPosition     = Position();\n" +
+                    "        Position(lenPosition + lenFldSz);\n" +
+                    "        auto dataLength      = %4$s(*((%5$s *)(m_buf + lenPosition)));\n" +
+                    "        int  bytesToCopy     = (len < dataLength) ? len : dataLength;\n" +
+                    "        auto pos             = Position();\n" +
+                    "        Position(Position()  + dataLength);\n" +
+                    "        ::memcpy(dst,  m_buf + pos, bytesToCopy);\n" +
                     "        return bytesToCopy;\n" +
                     "    }\n\n",
                     uncamelName(propertyName),
                     generateArrayFieldNotPresentCondition(token.version(), BASE_INDENT),
-                    sizeOfLengthField,
+                    lenFldSz,
                     formatByteOrderEncoding(lengthToken.encoding().byteOrder(), lengthToken.encoding().primitiveType()),
                     lengthCpp11Type
                 ));
 
                 sb.append(String.format(
-                    "    int put_%1$s(const char* src, int length) {\n" +
-                    "        auto sizeOfLengthField  = %2$d;\n" +
-                    "        auto lengthPosition     = position();\n" +
-                    "        *((%3$s *)(m_buf     + lengthPosition)) = %4$s((%3$s)length);\n" +
-                    "        position(lengthPosition + sizeOfLengthField);\n" +
-                    "        auto pos                = position();\n" +
-                    "        position(position()     + (sbe_uint64_t)length);\n" +
-                    "        ::memcpy(m_buf + pos, src, length);\n" +
-                    "        return length;\n" +
+                    "    int put_%1$s(const char* src, long len) {\n" +
+                    "        auto lenFldSz        = %2$d;\n" +
+                    "        auto lenPosition     = Position();\n" +
+                    "        *((%3$s *)(m_buf     + lenPosition)) = %4$s((%3$s)len);\n" +
+                    "        Position(lenPosition + lenFldSz);\n" +
+                    "        auto pos             = Position();\n" +
+                    "        Position(Position()  + len);\n" +
+                    "        ::memcpy(m_buf + pos, src, len);\n" +
+                    "        return len;\n" +
                     "    }\n",
                     uncamelName(propertyName),
-                    sizeOfLengthField,
+                    lenFldSz,
                     lengthCpp11Type,
                     formatByteOrderEncoding(lengthToken.encoding().byteOrder(), lengthToken.encoding().primitiveType())
                 ));
@@ -475,39 +506,43 @@ public class Cpp11Generator implements CodeGenerator
         final String propertyName,
         final String characterEncoding,
         final Token lengthToken,
-        final Integer sizeOfLengthField,
+        final Integer lenFldSz,
         final String lengthCpp11Type)
     {
+        final String uname = uncamelName(formatPropertyName(propertyName));
+
         sb.append(String.format(
             "\n"  +
             "    static const char* %1$s_char_encoding() { return \"%2$s\"; }\n",
-            uncamelName(formatPropertyName(propertyName)),
+            uname,
             characterEncoding
         ));
 
         sb.append(String.format(
-            "    static const int %1$s_since_version()   { return %2$d; }\n" +
+            "    static const char* %1$s_name()          { return \"%5$s\"; }\n" +
+            "    static int %1$s_tag()                   { return %3$d; }\n" +
+            "    static int %1$s_since_version()         { return %2$d; }\n" +
             "    bool   %1$s_in_version()          const { return m_version >= %2$s; }\n" +
-            "    static const int %1$s_id()              { return %3$d; }\n",
-            uncamelName(formatPropertyName(propertyName)),
-            Long.valueOf(token.version()),
-            Integer.valueOf(token.id())
-        ));
+            "    int    %1$s_offset()              const { return m_offset + %4$d; }\n",
+            uname,
+            token.version(),
+            token.id(),
+            token.offset(),
+            formatPropertyName(propertyName)
+            ));
 
         sb.append(String.format(
-            "\n" +
             "    static const int %s_header_size()       { return %d; }\n",
-            uncamelName(propertyName),
-            sizeOfLengthField
+            uname,
+            lenFldSz
         ));
 
         sb.append(String.format(
-            "\n" +
-            "    sbe_int64_t %1$s_len() const            {\n" +
+            "    sbe_int64_t %1$s_len()            const {\n" +
                     "%2$s" +
-            "        return %3$s(*((%4$s *)(m_buf + position())));\n" +
+            "        return %3$s(*((%4$s *)(m_buf + Position())));\n" +
             "    }\n\n",
-            uncamelName(propertyName),
+            uname,
             generateArrayFieldNotPresentCondition(token.version(), BASE_INDENT),
             formatByteOrderEncoding(lengthToken.encoding().byteOrder(), lengthToken.encoding().primitiveType()),
             lengthCpp11Type
@@ -520,21 +555,24 @@ public class Cpp11Generator implements CodeGenerator
 
         try (final Writer out = outputManager.createOutput(bitSetName))
         {
-            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), bitSetName, null));
+            final List<String> headers = Arrays.asList("<algorithm>", "<vector>");
+            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), bitSetName, headers));
             out.append(generateClassDeclaration(bitSetName));
             out.append(generateFixedFlyweightCode(bitSetName, tokens.get(0).size()));
 
             out.append(String.format(
                 "\n" +
-                "    %1$s& clear() {\n" +
+                "    %1$s& Clear() {\n" +
                 "        *((%2$s *)(m_buf + m_offset)) = 0;\n" +
                 "        return *this;\n" +
                 "    }\n\n",
                 bitSetName,
-                cpp11TypeName(tokens.get(0).encoding().primitiveType())
+                cpp11TypeName(tokens.get(0))
             ));
 
-            out.append(generateChoices(bitSetName, tokens.subList(1, tokens.size() - 1)));
+            List<String> choices = new ArrayList<String>();
+            out.append(generateChoices(bitSetName, tokens.subList(1, tokens.size() - 1), choices));
+            out.append(generateChoiceSetPrint(bitSetName, choices));
 
             out.append("};\n");
             fileEndIfdef(out, bitSetName, true);
@@ -549,11 +587,12 @@ public class Cpp11Generator implements CodeGenerator
         try (final Writer out = outputManager.createOutput(enumName))
         {
             out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), enumName, null));
-            out.append(generateEnumDeclaration(enumName));
+            out.append(generateEnumDeclaration(enumName, enumToken, tokens.subList(1, tokens.size() - 1)));
 
-            out.append(generateEnumValues(tokens.subList(1, tokens.size() - 1), enumToken));
-
-            out.append(generateEnumLookupMethod(tokens.subList(1, tokens.size() - 1), enumToken));
+            out.append(generateEnumLookupMethod(
+                           tokens.subList(1, tokens.size() - 1), enumToken
+                       ));
+            out.append(generateEnumToStringMethod(tokens.subList(1, tokens.size() - 1)));
 
             out.append("};\n");
             fileEndIfdef(out, enumName, true);
@@ -570,9 +609,17 @@ public class Cpp11Generator implements CodeGenerator
             out.append(generateClassDeclaration(compositeName));
             out.append(generateFixedFlyweightCode(compositeName, tokens.get(0).size()));
 
-            out.append(generatePrimitivePropertyEncodings(compositeName, tokens.subList(1, tokens.size() - 1), BASE_INDENT));
+            final List<Token> fieldTokens = tokens.subList(1, tokens.size() - 1);
+            out.append(generatePrimitivePropertyEncodings(
+                           compositeName, fieldTokens, BASE_INDENT
+                       ));
 
-            out.append("};\n");
+            NodeList fields = fieldTokens.stream()
+                                         .collect(NodeList::new, NodeList::add, NodeList::addAll);
+            out.append(generateCompositePrint(compositeName, fields, BASE_INDENT));
+
+            out.append("};\n\n");
+
             fileEndIfdef(out, compositeName, true);
         }
     }
@@ -587,11 +634,164 @@ public class Cpp11Generator implements CodeGenerator
         return String.format(
             indent + "        if (m_version < %1$d)\n" +
             indent + "            return false;\n\n",
-            Integer.valueOf(sinceVersion)
+            sinceVersion
         );
     }
 
-    private CharSequence generateChoices(final String bitsetClassName, final List<Token> tokens)
+    private CharSequence generateStreamPrint(boolean isGroup, final String name, final NodeList fields, final String indent)
+    {
+        final StringBuilder sb = new StringBuilder();
+        sb.append(String.format(
+            indent + "    // Print method for %1$s %2$s\n" +
+            indent + "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n",
+            name, isGroup ? "group" : "message"));
+
+        if (isGroup)
+        {
+            sb.append(String.format(
+                indent + "        out << a.Name()     << \" - (hdrsz=\" << a.HeaderSize()   << \", blen=\"\n" +
+                indent + "            << a.BlockLen() << \", count=\"   << a.Count() << ')' << std::endl;\n",
+                name
+            ));
+        }
+        else
+        {
+            sb.append(indent);
+            sb.append("        out << a.Name()    << \" (\" << a.SemanticType() << \") {sz=\" << a.BufSize()\n");
+            sb.append(indent);
+            sb.append("            << \", blen=\" << a.BlockLen() << \", ver=\" << a.Version() << \"}\\n\";\n");
+        }
+
+        for (final Node node : fields)
+        {
+            final String uname = uncamelName(node.name);
+
+            sb.append(String.format(
+                indent + "        out << std::setw(%1$3d) << a.%2$s_tag()    << ' ';\n" +
+                indent + "        out << std::setw(%3d) << a.%2$s_offset() << ' ';\n",
+                TAG_PRINT_WIDTH,
+                uname
+            ));
+            if (node.type == FieldType.GROUP)
+            {
+                int pad = NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - node.name.length() - 1;
+                sb.append(String.format(
+                    indent + "        out << \"%1$s\" << std::setw(%2$3d);\n" +
+                    indent + "        out << a.%3$s() << std::endl;\n",
+                    String.format("%" + pad + "s", " ").replace(' ', '-'),
+                    node.name.length() + 1,
+                    uname
+                ));
+            }
+            else
+            {
+                sb.append(String.format(
+                    indent + "        out << std::setw(%1$3d) << a.%3$s_meta(MetaAttr::SEMANTIC_TYPE);\n" +
+                    indent + "        out << std::setw(%2$3d) << \"%4$s\";\n" +
+                    indent + "        out << \" = \"; %5$s << std::endl;\n",
+                    TYPE_PRINT_WIDTH,
+                    NAME_PRINT_WIDTH,
+                    uname,
+                    node.name,
+                    valOrNull(node, "out", "a.")
+                ));
+            }
+        }
+
+        sb.append(indent).append("    }\n\n");
+        return sb;
+    }
+
+    private CharSequence valOrNull(final Node node, final String stream, final String pfx)
+    {
+        if (node.type != FieldType.SIMPLE)
+        {
+            return String.format("%s << %s%s()", stream, pfx, uncamelName(node.name));
+        }
+
+        String castType;
+        final String type = cpp11TypeName(node.token);
+
+        switch (node.ctype) {
+            case CHAR:
+                castType = node.isArray ? "const char*" : "char";
+                break;
+            case UINT8:
+            case UINT16:
+            case INT8:
+            case INT16:
+                castType = "int";
+                break;
+            default:
+                castType = type;
+                break;
+        }
+
+        return String.format(
+            "ValOrNull<%1$s>(%2$s, %3$s%4$s(), %3$s%4$s_null())",
+            castType, stream, pfx, uncamelName(node.name)
+        );
+    }
+
+    private CharSequence generateCompositePrint(final String name, final List<Node> fields, final String indent)
+    {
+        final StringBuilder sb  = new StringBuilder();
+        int                 i   = fields.size();
+        final String        eol = (i > 5 ? "\\n" : "");
+
+        sb.append(String.format(
+            indent + "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n" +
+            indent + "        out << \"%1$s{\"%2$s;\n",
+            name, eol
+        ));
+
+        for (final Node node : fields)
+        {
+            final String comma = --i > 0 ? (eol.isEmpty() ? "<< \", \"" : "\",\"") : "";
+            sb.append(String.format(
+                indent + "        out << \"%1$s=\"; %2$s%3$s%4$s;\n",
+                node.name,
+                valOrNull(node, "out", "a."),
+                comma,
+                eol
+            ));
+        }
+        sb.append(indent + "        out << \"}\";\n" +
+            indent + "        return out;\n" +
+            indent + "    }\n\n"
+        );
+        return sb;
+    }
+
+    private CharSequence generateChoiceSetPrint(final String name, final List<String> choices)
+    {
+        final StringBuilder sb = new StringBuilder();
+        sb.append(String.format(
+            "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n" +
+            "        std::vector<std::string> v;\n",
+            name
+        ));
+        int maxWid = Math.max(
+            1, choices.stream().mapToInt(String::length).summaryStatistics().getMax()
+        );
+
+        for (final String s : choices)
+        {
+            final String fmt = "%-" + (maxWid - s.length() + 1) + "s";
+            sb.append(String.format(
+            "        if (a.%s())" + fmt + "v.push_back(\"%s\");\n", uncamelName(s), " ", s));
+        }
+        sb.append(
+            "        int i=v.size();\n" +
+            "        for(auto& s : v) { out << s; if (--i) out << '|'; }\n" +
+            "        return out;\n" +
+            "    }\n\n"
+        );
+        return sb;
+    }
+
+    private CharSequence generateChoices(final String bitsetClassName, final List<Token> tokens,
+        List<String> choices)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -600,13 +800,14 @@ public class Cpp11Generator implements CodeGenerator
             if (token.signal() == Signal.CHOICE)
             {
                 final String choiceName = token.name();
-                final String typeName = cpp11TypeName(token.encoding().primitiveType());
+                final String typeName = cpp11TypeName(token);
                 final String choiceBitPosition = token.encoding().constValue().toString();
                 final String byteOrderStr = formatByteOrderEncoding(
                     token.encoding().byteOrder(), token.encoding().primitiveType());
 
+                choices.add(choiceName);
+
                 sb.append(String.format(
-                    "\n" +
                     "    bool %1$s() const {\n" +
                             "%2$s" +
                     "        return (%3$s(*((%4$s *)(m_buf + m_offset))) & (0x1L << %5$s)) != 0;\n" +
@@ -639,24 +840,78 @@ public class Cpp11Generator implements CodeGenerator
 
     private CharSequence generateEnumValues(final List<Token> tokens, final Token encodingToken)
     {
-        final StringBuilder sb = new StringBuilder();
+        final StringBuilder  sb = new StringBuilder();
         final Encoding encoding = encodingToken.encoding();
+        final String    nullVal = "NULL_VALUE";
 
-        sb.append("    enum value {\n");
+        int maxWid = Collections.max(
+            tokens.stream().collect(
+                () -> new LinkedList<>(Arrays.asList(nullVal.length())),
+                (c, t) -> c.add(t.name().length()), LinkedList::addAll
+            )
+        );
+
+        sb.append("    enum Value {\n");
 
         for (final Token token : tokens)
         {
-            final CharSequence constVal = generateLiteral(
-                token.encoding().primitiveType(), token.encoding().constValue().toString());
-            sb.append("        ").append(token.name()).append(" = ").append(constVal).append(",\n");
+            final CharSequence constVal = generateLiteral(token, token.encoding().constValue().toString(), false);
+            sb.append(
+                String.format(
+                    "        %-" + maxWid + "s = %s,\n",
+                    token.name(),
+                    constVal
+            ));
         }
 
         sb.append(String.format(
-            "        NULL_VALUE = %1$s",
-            generateLiteral(encoding.primitiveType(), encoding.applicableNullValue().toString())
+            "        %1$-" + maxWid + "s = %2$s",
+            nullVal,
+            generateLiteral(encodingToken, encoding.applicableNullValue().toString(), false)
         ));
 
-        sb.append("\n    };\n\n");
+        sb.append("\n    };\n");
+
+        return sb;
+    }
+
+    private CharSequence generateEnumToStringMethod(final List<Token> tokens)
+    {
+        final StringBuilder  sb = new StringBuilder();
+        final String defaultVal = "default";
+        final String nullVal    = "NULL_VALUE";
+
+        int maxWid = Collections.max(
+            tokens.stream()
+                  .collect(
+                      () -> new LinkedList<>(Arrays.asList(defaultVal.length() + 5)),
+                      (c, t) -> c.add(t.name().length()), LinkedList::addAll
+                  ));
+
+        sb.append(
+            "    const char* c_str() const { return c_str(m_val); }\n" +
+            "    static const char* c_str(Value v) {\n" +
+            "        switch (v) {\n");
+
+        for (final Token token : tokens)
+        {
+            sb.append(
+                String.format(
+                    "            case %1$-" + maxWid + "s: return \"%1$s\";\n",
+                    token.name()
+                )
+            );
+        }
+
+        sb.append(
+            String.format(
+                "            %1$-" + (maxWid + 5) + "s: return \"%2$s\";\n" +
+                "        }\n" +
+                "    }\n",
+                defaultVal,
+                nullVal
+            )
+        );
 
         return sb;
     }
@@ -667,36 +922,45 @@ public class Cpp11Generator implements CodeGenerator
         final StringBuilder sb = new StringBuilder();
 
         sb.append(String.format(
-           "    static const %1$s::value get(const %2$s val) {\n" +
+           "    static %1$s Get(const %2$s val) {\n" +
            "        switch (val) {\n",
            enumName,
-           cpp11TypeName(tokens.get(0).encoding().primitiveType())
+           cpp11TypeName(tokens.get(0))
         ));
+
+        final String nullVal = encodingToken.encoding().applicableNullValue().toString();
+        int maxWid = Collections.max(
+            tokens.stream().collect(
+                () -> new LinkedList<>(Arrays.asList(nullVal.length())),
+                (c, t) -> c.add(t.encoding().constValue().toString().length()),
+                LinkedList::addAll
+            ));
 
         for (final Token token : tokens)
         {
+            final String sval = token.encoding().constValue().toString();
             sb.append(String.format(
-                "            case %1$s: return %2$s;\n",
-                token.encoding().constValue().toString(),
+                "            case %1$-" + maxWid + "s: return %2$s;\n",
+                sval,
                 token.name())
             );
         }
 
         sb.append(String.format(
-            "            case %1$s: return NULL_VALUE;\n" +
-            "        }\n\n" +
-            "        throw std::runtime_error(\"unknown value for enum %2$s [E103]\");\n" +
+            "            case %1$-" + maxWid + "s: return NULL_VALUE;\n" +
+            "            default: throw std::runtime_error(\"unknown value for enum %2$s [E103]\");\n" +
+            "        }\n" +
             "    }\n",
-            encodingToken.encoding().applicableNullValue().toString(),
+            nullVal,
             enumName
         ));
 
         return sb;
     }
 
-    private CharSequence generateFieldNotPresentCondition(final int sinceVersion, final Encoding encoding, final String indent)
+    private CharSequence generateFieldNotPresentCondition(final Token token, final String indent, boolean isConst)
     {
-        if (0 == sinceVersion)
+        if (0 == token.version())
         {
             return "";
         }
@@ -704,8 +968,8 @@ public class Cpp11Generator implements CodeGenerator
         return String.format(
             indent + "        if (m_version < %1$d)\n" +
             indent + "            return %2$s;\n\n",
-            Integer.valueOf(sinceVersion),
-            generateLiteral(encoding.primitiveType(), encoding.applicableNullValue().toString())
+            token.version(),
+            generateLiteral(token, token.encoding().applicableNullValue().toString(), isConst)
         );
     }
 
@@ -719,7 +983,7 @@ public class Cpp11Generator implements CodeGenerator
         return String.format(
             indent + "        if (m_version < %1$d)\n" +
             indent + "            return 0;\n\n",
-            Integer.valueOf(sinceVersion)
+            sinceVersion
         );
     }
 
@@ -733,7 +997,7 @@ public class Cpp11Generator implements CodeGenerator
         return String.format(
             indent + "        if (m_version < %1$d)\n" +
             indent + "            return NULL;\n\n",
-            Integer.valueOf(sinceVersion)
+            sinceVersion
         );
     }
 
@@ -779,20 +1043,30 @@ public class Cpp11Generator implements CodeGenerator
                 "#  define SBE_DOUBLE_NAN NAN\n" +
                 "#endif\n\n" +
                 "#include <limits>\n" +
+                "#include <cassert>\n" +
                 "#ifndef _SBE_CPP11_GENERATOR_\n" +
                 "#define _SBE_CPP11_GENERATOR_\n" +
                 "#endif\n" +
-                "#include <sbe/sbe.hpp>\n\n");
+                "#include <sbe/sbe.hpp>\n" +
+                "#include <type_traits>\n" +
+                "#include <ostream>\n\n");
 
             out.append(String.format(
                 (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
                 "namespace %1$s {\n\n" +
-                "    using sbe::meta_attr;\n\n" +
-                "    inline const char* meta_attr_str(meta_attr attr) {\n" +
-                "        static const char* s_vals[] = {\"unix\", \"nanosecond\", \"UTCTimestamp\"};\n" +
-                "        return (std::size_t(attr) < (sizeof(s_vals) / sizeof(s_vals[0])))\n" +
-                "            ? s_vals[std::size_t(attr)] : \"undefined\";\n" +
-                "    }\n\n",
+                "    using sbe::MetaAttr;\n\n" +
+                "    inline const char* MetaAttrStr(MetaAttr a, const char* s1, const char* s2, const char* s3) {\n" +
+                "        const char* vals[] = {s1, s2, s3};\n" +
+                "        assert(std::size_t(a) < (sizeof(vals) / sizeof(vals[0])));\n" +
+                "        return vals[std::size_t(a)];\n" +
+                "    }\n\n" +
+                "template <class CastT, class T>\n" +
+                "inline std::ostream& ValOrNull(std::ostream& out, const T& a, const T& null) {\n" +
+                "    if      (a == null)                     out << \"<null>\";\n" +
+                "    else if (std::is_same<T, CastT>::value) out << (CastT)a;\n" +
+                "    else                                    out << a;\n" +
+                "    return out;\n" +
+                "}\n\n",
                 namespace
             ));
 
@@ -829,21 +1103,36 @@ public class Cpp11Generator implements CodeGenerator
             ifdefName(className)
         ));
 
+        boolean addnl = false;
+
         if (incDefines)
         {
             sb.append(String.format("#include <%1$s/sbe.hpp>\n", outputSubdir));
+            addnl = true;
         }
 
         if (typesToInclude != null)
         {
             for (final String incName : typesToInclude)
             {
-                sb.append(String.format(
-                    "#include <%1$s/%2$s.hpp>\n",
-                    outputSubdir,
-                    toUpperFirstChar(incName)
-                ));
+                if (!incName.isEmpty() && incName.charAt(0) == '<' && incName.endsWith(">"))
+                {
+                    sb.append("#include " + incName + "\n");
+                }
+                else
+                {
+                    sb.append(String.format(
+                        "#include <%1$s/%2$s.hpp>\n",
+                        outputSubdir,
+                        toUpperFirstChar(incName)
+                    ));
+                }
             }
+            addnl = true;
+        }
+
+        if (addnl)
+        {
             sb.append("\n");
         }
 
@@ -867,9 +1156,29 @@ public class Cpp11Generator implements CodeGenerator
         );
     }
 
-    private CharSequence generateEnumDeclaration(final String name)
+    private CharSequence generateEnumDeclaration(final String name, final Token token, final List<Token> tokens)
     {
-        return "class " + name + " {\npublic:\n\n";
+        final CharSequence values = generateEnumValues(tokens, token);
+        return String.format(
+            "struct %1$s {\n" +
+            "%3$s\n" +
+            "private:\n" +
+            "    static const size_t s_size = 1+%2$d;\n" +
+            "    Value  m_val;\n" +
+            "public:\n\n" +
+            "    explicit %1$s(int    v) : m_val(Value(v))   {}\n" +    // TODO: Add assert() ???
+            "    explicit %1$s(size_t v) : m_val(Value(v))   {}\n" +
+            "    %1$s()                  : m_val(NULL_VALUE) {}\n" +
+            "    constexpr %1$s(Value v) : m_val(v) {}\n\n"  +
+            "    operator Value() const { return m_val; }\n" +
+            "    bool     Empty() const { return m_val == NULL_VALUE; }\n\n" +
+            "    inline friend std::ostream& operator<< (std::ostream& out, %1$s a) {\n" +
+            "        return out << %1$s::c_str(a);\n" +
+            "    }\n",
+            name,
+            tokens.size(),
+            values
+        );
     }
 
     private CharSequence generatePrimitivePropertyEncodings(
@@ -928,30 +1237,28 @@ public class Cpp11Generator implements CodeGenerator
     {
         final StringBuilder sb = new StringBuilder();
 
-        final Encoding encoding = token.encoding();
-        final PrimitiveType primitiveType = encoding.primitiveType();
-        final String cpp11TypeName = cpp11TypeName(primitiveType);
-        final CharSequence nullValueString = generateNullValueLiteral(primitiveType, encoding);
+        final String cpp11TypeName = cpp11TypeName(token, true);
+        final CharSequence nullValueString = generateNullValueLiteral(token, true);
 
         sb.append(String.format(
-            indent + "    static const %1$s %2$s_null() { return %3$s; }\n",
+            indent + "    static %1$s %2$s_null() { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
             nullValueString
         ));
 
         sb.append(String.format(
-            indent + "    static const %1$s %2$s_min()  { return %3$s; }\n",
+            indent + "    static %1$s %2$s_min()  { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
-            generateLiteral(primitiveType, token.encoding().applicableMinValue().toString())
+            generateLiteral(token, token.encoding().applicableMinValue().toString(), true)
         ));
 
         sb.append(String.format(
-            indent + "    static const %1$s %2$s_max()  { return %3$s; }\n",
+            indent + "    static %1$s %2$s_max()  { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
-            generateLiteral(primitiveType, token.encoding().applicableMaxValue().toString())
+            generateLiteral(token, token.encoding().applicableMaxValue().toString(), true)
         ));
 
         return sb;
@@ -960,8 +1267,8 @@ public class Cpp11Generator implements CodeGenerator
     private CharSequence generateSingleValueProperty(
         final String containingClassName, final String propertyName, final Token token, final String indent)
     {
-        final String cpp11TypeName = cpp11TypeName(token.encoding().primitiveType());
-        final Integer offset = Integer.valueOf(token.offset());
+        final String cpp11TypeName = cpp11TypeName(token);
+        final int offset = token.offset();
 
         final StringBuilder sb = new StringBuilder();
 
@@ -973,8 +1280,10 @@ public class Cpp11Generator implements CodeGenerator
             indent + "    }\n\n",
             cpp11TypeName,
             uncamelName(propertyName),
-            generateFieldNotPresentCondition(token.version(), token.encoding(), indent),
-            formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType()),
+            generateFieldNotPresentCondition(token, indent, true),
+            formatByteOrderEncoding(
+                token.encoding().byteOrder(), token.encoding().primitiveType()
+            ),
             offset
         ));
 
@@ -987,7 +1296,9 @@ public class Cpp11Generator implements CodeGenerator
             uncamelName(propertyName),
             cpp11TypeName,
             offset,
-            formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType())
+            formatByteOrderEncoding(
+                token.encoding().byteOrder(), token.encoding().primitiveType()
+            )
         ));
 
         return sb;
@@ -996,16 +1307,15 @@ public class Cpp11Generator implements CodeGenerator
     private CharSequence generateArrayProperty(
         final String containingClassName, final String propertyName, final Token token, final String indent)
     {
-        final String cpp11TypeName = cpp11TypeName(token.encoding().primitiveType());
+        final String cpp11Type         = cpp11TypeName(token);
+        final String cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
         final Integer offset = Integer.valueOf(token.offset());
 
         final StringBuilder sb = new StringBuilder();
 
         sb.append(String.format(
             "\n" +
-            indent + "    static const int %1$s_len() {\n" +
-            indent + "        return %2$d;\n" +
-            indent + "    }\n\n",
+            indent + "    static const int %1$s_len() { return %2$d; }\n",
             uncamelName(propertyName),
             Integer.valueOf(token.arrayLength())
         ));
@@ -1025,41 +1335,41 @@ public class Cpp11Generator implements CodeGenerator
             indent + "        if (idx < 0 || idx >= %3$d)\n" +
             indent + "            throw std::runtime_error(\"index out of range for %2$s [E104]\");\n\n" +
                              "%4$s" +
-            indent + "        return %5$s(*((%1$s *)(m_buf + m_offset + %6$d + (idx * %7$d))));\n" +
+            indent + "        return %5$s(*((%1$s*)(m_buf + m_offset + %6$d + (idx * %7$d))));\n" +
             indent + "    }\n\n",
-            cpp11TypeName,
+            cpp11NonArrayType,
             uncamelName(propertyName),
-            Integer.valueOf(token.arrayLength()),
-            generateFieldNotPresentCondition(token.version(), token.encoding(), indent),
+            token.arrayLength(),
+            generateFieldNotPresentCondition(token, indent, true),
             formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType()),
             offset,
-            Integer.valueOf(token.encoding().primitiveType().size())
+            token.encoding().primitiveType().size()
         ));
 
         sb.append(String.format(
-            indent + "    void %1$s(int idx, const %2$s val) {\n" +
+            indent + "    void %1$s(int idx, %2$s val) {\n" +
             indent + "        if (idx < 0 || idx >= %3$d)\n" +
             indent + "            throw std::runtime_error(\"index out of range for %1$s [E105]\");\n\n" +
-            indent + "        *((%2$s *)(m_buf + m_offset + %4$d + (idx * %5$d))) = %6$s(val);\n" +
+            indent + "        *((%2$s*)(m_buf + m_offset + %4$d + (idx * %5$d))) = %6$s(val);\n" +
             indent + "    }\n\n",
             uncamelName(propertyName),
-            cpp11TypeName,
-            Integer.valueOf(token.arrayLength()),
+            cpp11NonArrayType,
+            token.arrayLength(),
             offset,
-            Integer.valueOf(token.encoding().primitiveType().size()),
+            token.encoding().primitiveType().size(),
             formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType())
         ));
 
         sb.append(String.format(
             indent + "    int %1$s(char* dst, const int length) const {\n" +
             indent + "        if (length > %2$d)\n" +
-            indent + "             throw std::runtime_error(\"length too large for get%1$s [E106]\");\n\n" +
+            indent + "             throw std::runtime_error(\"length too large for get %1$s [E106]\");\n\n" +
                              "%3$s" +
             indent + "        ::memcpy(dst, m_buf + m_offset + %4$d, length);\n" +
             indent + "        return length;\n" +
             indent + "    }\n\n",
             uncamelName(propertyName),
-            Integer.valueOf(token.arrayLength()),
+            token.arrayLength(),
             generateArrayFieldNotPresentCondition(token.version(), indent),
             offset
         ));
@@ -1072,7 +1382,7 @@ public class Cpp11Generator implements CodeGenerator
             containingClassName,
             uncamelName(propertyName),
             offset,
-            Integer.valueOf(token.arrayLength())
+            token.arrayLength()
         ));
 
         return sb;
@@ -1080,7 +1390,7 @@ public class Cpp11Generator implements CodeGenerator
 
     private CharSequence generateConstPropertyMethods(final String propertyName, final Token token, final String indent)
     {
-        final String cpp11TypeName = cpp11TypeName(token.encoding().primitiveType());
+        final String cpp11TypeName = cpp11TypeName(token);
 
         if (token.encoding().primitiveType() != PrimitiveType.CHAR)
         {
@@ -1089,7 +1399,7 @@ public class Cpp11Generator implements CodeGenerator
                 indent + "    %1$s %2$s() const { return %3$s; }\n\n",
                 cpp11TypeName,
                 uncamelName(propertyName),
-                generateLiteral(token.encoding().primitiveType(), token.encoding().constValue().toString())
+                generateLiteral(token, token.encoding().constValue().toString(), true)
             );
         }
 
@@ -1110,13 +1420,13 @@ public class Cpp11Generator implements CodeGenerator
             "\n" +
             indent + "    static const int %1$s_len() { return %2$d; }\n\n",
             uncamelName(propertyName),
-            Integer.valueOf(constantValue.length)
+            constantValue.length
         ));
 
         sb.append(String.format(
             indent + "    const char* %1$s() const {\n" +
-            indent + "        static const sbe_uint8_t s_%1$s_vals[] = {%2$s};\n\n" +
-            indent + "        return (const char* )s_%1$s_vals;\n" +
+            indent + "        static const uint8_t s_%1$s_vals[] = {%2$s, '\\0'};\n\n" +
+            indent + "        return (const char*)s_%1$s_vals;\n" +
             indent + "    }\n\n",
             uncamelName(propertyName),
             values
@@ -1124,7 +1434,7 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             indent + "    %1$s %2$s(int idx) const {\n" +
-            indent + "        static const sbe_uint8_t s_%2$s_vals[] = {%3$s};\n\n" +
+            indent + "        static const uint8_t s_%2$s_vals[] = {%3$s, '\\0'};\n\n" +
             indent + "        return s_%2$s_vals[idx];\n" +
             indent + "    }\n\n",
             cpp11TypeName,
@@ -1133,9 +1443,10 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            indent + "    int %1$s(char* dst, const int len) const {\n" +
-            indent + "        static const sbe_uint8_t s_%2$s_vals[] = {%3$s};\n" +
-            indent + "        int bytes = (len < sizeof(s_%2$s_vals)) ? len : sizeof(s_%2$s_vals);\n\n" +
+            indent + "    int %1$s(char* dst, int len) const {\n" +
+            indent + "        static const uint8_t s_%2$s_vals[] = {%3$s, '\\0'};\n" +
+            indent + "        static const int     s_size = sizeof(s_%2$s_vals)-1;\n" +
+            indent + "        int bytes = (len <   s_size) ? len : s_size;\n\n" +
             indent + "        ::memcpy(dst, s_%2$s_vals, bytes);\n" +
             indent + "        return bytes;\n" +
             indent + "    }\n",
@@ -1151,19 +1462,27 @@ public class Cpp11Generator implements CodeGenerator
     {
         return String.format(
             "private:\n" +
-            "    char* m_buf;\n" +
-            "    int   m_offset;\n" +
-            "    int   m_version;\n\n" +
+            "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
+            "    mutable char* m_buf;\n" +
+            "    mutable int   m_offset;\n" +
+            "    mutable int   m_version;\n\n" +
             "public:\n" +
-            "    %1$s& wrap(char* buffer, const int offset, const int vsn, const int buflen) {\n" +
-            "        if (SBE_BOUNDS_CHECK_EXPECT((offset > (buflen - %2$s)), 0))\n" +
+            "    %1$s() : m_buf(NULL), m_offset(0), m_version(0) {}\n\n" +
+            "    %1$s(char* buffer, int offset, int vsn, int bufsz)\n" +
+            "        : m_buf(buffer), m_offset(offset), m_version(vsn)\n" +
+            "    {\n" +
+            "        if (SBE_BOUNDS_CHECK_EXPECT((offset > (bufsz - %2$s)), 0))\n" +
             "            throw std::runtime_error(\"buffer too short for flyweight [E107]\");\n" +
-            "        m_buf     = buffer;\n" +
-            "        m_offset  = offset;\n" +
-            "        m_version = vsn;\n" +
+            "    }\n\n" +
+            "    %1$s& Wrap(char* buffer, int offset, int vsn, int bufsz) {\n" +
+            "        new (this) %1$s(buffer, offset, vsn, bufsz);\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    static const int size() { return %2$s; }\n",
+            "    const %1$s& Wrap(char* buffer, int offset, int vsn, int bufsz) const {\n" +
+            "        new (const_cast<%1$s*>(this)) %1$s(buffer, offset, vsn, bufsz);\n" +
+            "        return *this;\n" +
+            "    }\n\n" +
+            "    static const int Size() { return %2$s; }\n\n",
             className,
             Integer.valueOf(size)
         );
@@ -1171,77 +1490,88 @@ public class Cpp11Generator implements CodeGenerator
 
     private CharSequence generateMessageFlyweightCode(final String className, final Token token)
     {
-        final String blockLengthType = cpp11TypeName(ir.headerStructure().blockLengthType());
-        final String templateIdType = cpp11TypeName(ir.headerStructure().templateIdType());
-        final String schemaIdType = cpp11TypeName(ir.headerStructure().schemaIdType());
-        final String schemaVersionType = cpp11TypeName(ir.headerStructure().schemaVersionType());
+        final String blockLengthType = cpp11TypeName(ir.headerStructure().blockLengthType(), false);
+        final String templateIdType = cpp11TypeName(ir.headerStructure().templateIdType(), false);
+        final String schemaIdType = cpp11TypeName(ir.headerStructure().schemaIdType(), false);
+        final String schemaVersionType = cpp11TypeName(ir.headerStructure().schemaVersionType(), false);
         final String semanticType = token.encoding().semanticType() == null ? "" : token.encoding().semanticType();
 
         return String.format(
             "private:\n" +
-            "    char* m_buf;\n" +
-            "    int   m_buf_len;\n" +
-            "    int*  m_pos_ptr;\n" +
-            "    int   m_offset;\n" +
-            "    int   m_position;\n" +
-            "    int   m_block_len;\n" +
-            "    int   m_version;\n\n" +
+            "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
+            "    mutable char*  m_buf;\n" +
+            "    mutable size_t m_buf_size;\n" +
+            "    mutable int    m_offset;\n" +
+            "    mutable int    m_position;\n" +
+            "    mutable int    m_block_len;\n" +
+            "    mutable int    m_version;\n" +
+            "    mutable int*   m_pos_ptr;\n\n" +
             "    %10$s(const %10$s&) {}\n" +
             "public:\n\n" +
-            "    %10$s() : m_buf(NULL), m_buf_len(0), m_offset(0) {}\n\n" +
-            "    static constexpr %1$s sbe_block_len()            { return %2$s; }\n" +
-            "    static constexpr %3$s sbe_template_id()          { return %4$s; }\n" +
-            "    static constexpr %5$s sbe_schema_id()            { return %6$s; }\n" +
-            "    static constexpr %7$s sbe_schema_version()       { return %8$s; }\n" +
-            "    static constexpr const char* sbe_semantic_type() { return \"%9$s\"; }\n" +
-            "    static constexpr const char* name()              { return \"%10$s\"; }\n" +
-            "    sbe_uint64_t                 offset()      const { return m_offset; }\n\n" +
+            "    %10$s() : m_buf(NULL), m_buf_size(0), m_offset(0) {}\n\n" +
+            "    %10$s(const char* buf, int offset, int blk_len, int vsn, size_t bufsz)\n" +
+            "        : m_buf(const_cast<char*>(buf)), m_buf_size(bufsz),   m_offset(offset)\n" +
+            "        , m_position(offset + blk_len),  m_block_len(blk_len), m_version(vsn)\n" +
+            "        , m_pos_ptr(&m_position)\n" +
+            "    {}\n\n" +
+            "    static constexpr %1$s BlockLen()            { return %2$s; }\n" +
+            "    static constexpr %3$s TemplateID()          { return %4$s; }\n" +
+            "    static constexpr %5$s SchemaID()            { return %6$s; }\n" +
+            "    static constexpr %7$s SchemaVersion()       { return %8$s; }\n" +
+            "    static constexpr const char* SemanticType() { return \"%9$s\"; }\n" +
+            "    static constexpr const char* Name()         { return \"%10$s\"; }\n" +
+            "    uint64_t                     Offset() const { return m_offset; }\n\n" +
             "    %10$s&\n" +
-            "    wrap_for_encode(char* buffer, const int offset, const int buflen) {\n" +
+            "    WrapForEncode(char* buffer, int offset, size_t bufsz) {\n" +
             "        m_buf           = buffer;\n" +
             "        m_offset        = offset;\n" +
-            "        m_buf_len       = buflen;\n" +
-            "        m_block_len     = sbe_block_len();\n" +
-            "        m_version       = sbe_schema_version();\n" +
-            "        position(offset + m_block_len);\n" +
+            "        m_buf_size      = bufsz;\n" +
+            "        m_block_len     = BlockLen();\n" +
+            "        m_version       = SchemaVersion();\n" +
+            "        Position(offset + m_block_len);\n" +
             "        m_pos_ptr       = &m_position;\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    %10$s&\n" +
-            "    wrap_for_decode(char* buffer,  const int offset, const int blk_len,\n" +
-            "                           const int vsn, const int buflen) {\n" +
-            "        m_buf           = buffer;\n" +
+            "    const %10$s&\n" +
+            "    WrapForDecode(const char* buffer, int offset, int blk_len, int vsn, size_t bufsz) const {\n" +
+            "        m_buf           = const_cast<char*>(buffer);\n" +
             "        m_offset        = offset;\n" +
-            "        m_buf_len       = buflen;\n" +
+            "        m_buf_size      = bufsz;\n" +
             "        m_block_len     = blk_len;\n" +
             "        m_version       = vsn;\n" +
+            "        int pos         = offset+m_block_len;\n" +
+            "        if (SBE_BOUNDS_CHECK_EXPECT((pos > long(m_buf_size)), 0))\n" +
+            "            throw std::runtime_error(\"buffer too short [E100]\");\n" +
+            "        m_position      = pos;\n" +
             "        m_pos_ptr       = &m_position;\n" +
-            "        position(offset + m_block_len);\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    sbe_uint64_t position() const  { return m_position; }\n" +
-            "    void position(sbe_uint64_t position) {\n" +
-            "        if (SBE_BOUNDS_CHECK_EXPECT((position > m_buf_len), 0))\n" +
+            "    uint64_t    Position() const { return m_position; }\n" +
+            "    void Position(uint64_t position) {\n" +
+            "        if (SBE_BOUNDS_CHECK_EXPECT((position > long(m_buf_size)), 0))\n" +
             "            throw std::runtime_error(\"buffer too short [E100]\");\n" +
             "        m_position = position;\n" +
             "    }\n\n" +
-            "    int   size()     const { return position() - m_offset; }\n" +
-            "    char* buffer()         { return m_buf; }\n" +
-            "    int   version()  const { return m_version; }\n",
+            "    int         Size()     const { return Position() - m_offset; }\n" +
+            "    char*       Buffer()         { return m_buf; }\n" +
+            "    const char* Buffer()   const { return m_buf; }\n" +
+            "    size_t      BufSize()  const { return m_buf_size; }\n" +
+            "    int         Version()  const { return m_version; }\n",
             blockLengthType,
-            generateLiteral(ir.headerStructure().blockLengthType(), Integer.toString(token.size())),
+            generateLiteral(ir.headerStructure().blockLengthType(), Integer.toString(token.size()), false, false),
             templateIdType,
-            generateLiteral(ir.headerStructure().templateIdType(), Integer.toString(token.id())),
+            generateLiteral(ir.headerStructure().templateIdType(), Integer.toString(token.id()), false, false),
             schemaIdType,
-            generateLiteral(ir.headerStructure().schemaIdType(), Integer.toString(ir.id())),
+            generateLiteral(ir.headerStructure().schemaIdType(), Integer.toString(ir.id()), false, false),
             schemaVersionType,
-            generateLiteral(ir.headerStructure().schemaVersionType(), Integer.toString(token.version())),
+            generateLiteral(ir.headerStructure().schemaVersionType(), Integer.toString(token.version()), false, false),
             semanticType,
             className
         );
     }
 
-    private CharSequence generateFields(final String containingClassName, final List<Token> tokens, final String indent)
+    private CharSequence generateFields(final String containingClassName,
+        final List<Token> tokens, final String indent, NodeList fields)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -1255,16 +1585,20 @@ public class Cpp11Generator implements CodeGenerator
 
                 sb.append(String.format(
                     "\n" +
-                    indent + "    static const int %1$s_id() { return %2$d; }\n",
+                    indent + "    static const char* %1$s_name()             { return \"%3$s\"; }\n" +
+                    indent + "    static const int   %1$s_tag()              { return %2$d; }\n",
                     uncamelName(propertyName),
-                    Integer.valueOf(signalToken.id())
+                    signalToken.id(),
+                    propertyName
                 ));
 
                 sb.append(String.format(
-                    indent + "    static const int %1$s_since_version() { return %2$d; }\n" +
-                    indent + "    bool %1$s_in_version()          const { return (m_version >= %2$d); }\n",
+                    indent + "    static const int   %1$s_since_version()    { return %2$d; }\n" +
+                    indent + "    bool               %1$s_in_version() const { return (m_version >= %2$d); }\n" +
+                    indent + "    int                %1$s_offset()     const { return m_offset + %3$d; }\n",
                     uncamelName(propertyName),
-                    Long.valueOf(signalToken.version())
+                    signalToken.version(),
+                    signalToken.offset()
                 ));
 
                 generateFieldMetaAttributeMethod(sb, signalToken, indent);
@@ -1272,18 +1606,25 @@ public class Cpp11Generator implements CodeGenerator
                 switch (encodingToken.signal())
                 {
                     case ENCODING:
+                        if (Encoding.Presence.CONSTANT != encodingToken.encoding().presence())
+                        {
+                            fields.add(propertyName, encodingToken);
+                        }
                         sb.append(generatePrimitiveProperty(containingClassName, propertyName, encodingToken, indent));
                         break;
 
                     case BEGIN_ENUM:
-                        sb.append(generateEnumProperty(containingClassName, propertyName, encodingToken, indent));
+                        final Node node = fields.add(propertyName, encodingToken);
+                        sb.append(generateEnumProperty(containingClassName, propertyName, encodingToken, node, indent));
                         break;
 
                     case BEGIN_SET:
+                        fields.add(propertyName, encodingToken);
                         sb.append(generateBitsetProperty(propertyName, encodingToken, indent));
                         break;
 
                     case BEGIN_COMPOSITE:
+                        fields.add(propertyName, encodingToken);
                         sb.append(generateCompositeProperty(propertyName, encodingToken, indent));
                         break;
                 }
@@ -1295,19 +1636,18 @@ public class Cpp11Generator implements CodeGenerator
 
     private void generateFieldMetaAttributeMethod(final StringBuilder sb, final Token token, final String indent)
     {
-        /*
         final Encoding encoding = token.encoding();
         final String epoch = encoding.epoch() == null ? "" : encoding.epoch();
         final String timeUnit = encoding.timeUnit() == null ? "" : encoding.timeUnit();
         final String semanticType = encoding.semanticType() == null ? "" : encoding.semanticType();
-        */
+
         sb.append(String.format(
             "\n" +
-            indent + "    static const char* %s_meta_attr(meta_attr attr) { return meta_attr_str(attr); }\n",
-            uncamelName(token.name()) /*,
+            indent + "    static const char* %1$s_meta(MetaAttr a) { return MetaAttrStr(a, \"%2$s\", \"%3$s\", \"%4$s\"); }\n",
+            uncamelName(token.name()),
             epoch,
             timeUnit,
-            semanticType */
+            semanticType
         ));
     }
 
@@ -1327,19 +1667,19 @@ public class Cpp11Generator implements CodeGenerator
     }
 
     private CharSequence generateEnumProperty(
-        final String containingClassName, final String propertyName, final Token token, final String indent)
+        final String containingClassName, final String propertyName, final Token token, final Node node, final String indent)
     {
         final String enumName = token.name();
-        final String typeName = cpp11TypeName(token.encoding().primitiveType());
+        final String typeName = cpp11TypeName(token);
         final Integer offset = Integer.valueOf(token.offset());
 
         final StringBuilder sb = new StringBuilder();
 
         sb.append(String.format(
             "\n" +
-            indent + "    %1$s::value %2$s() const {\n" +
+            indent + "    %1$s %2$s() const {\n" +
                              "%3$s" +
-            indent + "        return %1$s::get(%4$s(*((%5$s *)(m_buf + m_offset + %6$d))));\n" +
+            indent + "        return %1$s(%4$s(*((%5$s *)(m_buf + m_offset + %6$d))));\n" +
             indent + "    }\n\n",
             enumName,
             uncamelName(propertyName),
@@ -1350,8 +1690,8 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            indent + "    %1$s& %2$s(%3$s::value value) {\n" +
-            indent + "        *((%4$s *)(m_buf + m_offset + %5$d)) = %6$s(value);\n" +
+            indent + "    %1$s& %2$s(%3$s val) {\n" +
+            indent + "        *((%4$s *)(m_buf + m_offset + %5$d)) = %6$s(val);\n" +
             indent + "        return *this;\n" +
             indent + "    }\n\n",
             formatClassName(containingClassName),
@@ -1375,7 +1715,7 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "private:\n" +
-            indent + "    %1$s m_%2$s;\n\n" +
+            indent + "    mutable %1$s m_%2$s;\n\n" +
             indent + "public:\n",
             bitsetName,
             uncamelName(propertyName)
@@ -1384,7 +1724,11 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    %1$s& %2$s() {\n" +
-            indent + "        m_%2$s.wrap(m_buf, m_offset + %3$d, m_version, m_buf_len);\n" +
+            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
+            indent + "        return m_%2$s;\n" +
+            indent + "    }\n" +
+            indent + "    const %1$s& %2$s() const {\n" +
+            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n\n",
             bitsetName,
@@ -1404,9 +1748,9 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "\n" +
-            "private:\n" +
-            indent + "    %1$s m_%2$s;\n\n" +
-            "public:\n",
+            indent + "private:\n" +
+            indent + "    mutable %1$s m_%2$s;\n\n" +
+            indent + "public:\n",
             compositeName,
             uncamelName(propertyName)
         ));
@@ -1414,7 +1758,11 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    %1$s& %2$s() {\n" +
-            indent + "        m_%2$s.wrap(m_buf, m_offset + %3$d, m_version, m_buf_len);\n" +
+            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
+            indent + "        return m_%2$s;\n" +
+            indent + "    }\n" +
+            indent + "    const %1$s& %2$s() const {\n" +
+            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n",
             compositeName,
@@ -1425,14 +1773,14 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateNullValueLiteral(final PrimitiveType primitiveType, final Encoding encoding)
+    private CharSequence generateNullValueLiteral(final Token token, boolean isConst)
     {
         // Visual C++ does not handle minimum integer values properly
         // See: http://msdn.microsoft.com/en-us/library/4kh09110.aspx
         // So some of the null values get special handling
-        if(null == encoding.nullValue())
+        if(null == token.encoding().nullValue())
         {
-            switch (primitiveType)
+            switch (token.encoding().primitiveType())
             {
                 case CHAR:
                 case FLOAT:
@@ -1456,20 +1804,28 @@ public class Cpp11Generator implements CodeGenerator
                     return "std::numeric_limits<uint64_t>::max()";
             }
         }
-        return generateLiteral(primitiveType, encoding.applicableNullValue().toString());
+        return generateLiteral(token, token.encoding().applicableNullValue().toString(), isConst);
     }
 
-    private CharSequence generateLiteral(final PrimitiveType type, final String value)
+
+    private CharSequence generateLiteral(final Token token, final String value, boolean isConst)
+    {
+        final PrimitiveType type = token.encoding().primitiveType();
+        return generateLiteral(type, value, token.arrayLength() > 1, isConst);
+    }
+
+    private CharSequence generateLiteral(final PrimitiveType type, final String value, boolean isArray, boolean isConst)
     {
         String literal = "";
 
-        final String castType = cpp11TypeName(type);
+        final String castType = cpp11TypeName(type, isArray, isConst);
+
         switch (type)
         {
             case CHAR:
             case UINT8:
-            case UINT16:
             case INT8:
+            case UINT16:
             case INT16:
                 literal = "(" + castType + ")" + value;
                 break;

@@ -16,10 +16,10 @@
 package uk.co.real_logic.sbe.generation.cpp11;
 
 import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.ir.Token;
 
 import java.nio.ByteOrder;
-import java.util.EnumMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Utilities for mapping between IR and the C++ language.
@@ -30,27 +30,79 @@ public class Cpp11Util
 
     static
     {
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.CHAR, "sbe_char_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT8, "sbe_int8_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT16, "sbe_int16_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT32, "sbe_int32_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT64, "sbe_int64_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT8, "sbe_uint8_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT16, "sbe_uint16_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT32, "sbe_uint32_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT64, "sbe_uint64_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.FLOAT, "sbe_float_t");
-        typeNameByPrimitiveTypeMap.put(PrimitiveType.DOUBLE, "sbe_double_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.CHAR,   "char");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT8,   "int8_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT16,  "int16_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT32,  "int32_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.INT64,  "int64_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT8,  "uint8_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT16, "uint16_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT32, "uint32_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.UINT64, "uint64_t");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.FLOAT,  "float");
+        typeNameByPrimitiveTypeMap.put(PrimitiveType.DOUBLE, "double");
+    }
+
+    /**
+     * Map the name of a {@link uk.co.real_logic.sbe.PrimitiveType} to a C++11 primitive type name.
+     *
+     * @param token containing the primitive type to map.
+     * @return the name of the Java primitive that most closely maps.
+     */
+    public static String cpp11TypeName(final Token token)
+    {
+        return cpp11TypeName(token.encoding().primitiveType(), token.arrayLength() > 1);
+    }
+
+    /**
+     * Map the name of a {@link uk.co.real_logic.sbe.PrimitiveType} to a C++11 primitive type name.
+     *
+     * @param token containing the primitive type to map.
+     * @param isConst if the value of this type is const
+     * @return the name of the Java primitive that most closely maps.
+     */
+    public static String cpp11TypeName(final Token token, boolean isConst)
+    {
+        return cpp11TypeName(token.encoding().primitiveType(), token.arrayLength() > 1, isConst);
     }
 
     /**
      * Map the name of a {@link uk.co.real_logic.sbe.PrimitiveType} to a C++11 primitive type name.
      *
      * @param primitiveType to map.
+     * @param isArray if the value of this type is an array
      * @return the name of the Java primitive that most closely maps.
      */
-    public static String cpp11TypeName(final PrimitiveType primitiveType)
+    public static String cpp11TypeName(final PrimitiveType primitiveType, boolean isArray)
     {
+        return cpp11TypeName(primitiveType, isArray, false);
+    }
+
+    /**
+     * Map the name of a {@link uk.co.real_logic.sbe.PrimitiveType} to a C++11 primitive type name.
+     *
+     * @param primitiveType to map.
+     * @param isArray if the value of this type is an array
+     * @param isConst if the value of this type is const
+     * @return the name of the Java primitive that most closely maps.
+     */
+    public static String cpp11TypeName(final PrimitiveType primitiveType, boolean isArray, boolean isConst)
+    {
+        final String type = typeNameByPrimitiveTypeMap.get(primitiveType);
+
+        // Non-const value
+        if (!isConst)
+        {
+            return type + (isArray ? "*" : "");
+        }
+
+        // Const array value
+        if (isArray)
+        {
+            return "const " + type + "*";
+        }
+
+        // Const non-array value
         return typeNameByPrimitiveTypeMap.get(primitiveType);
     }
 
@@ -123,4 +175,85 @@ public class Cpp11Util
                 return "";
         }
     }
+
+    public class Pair<L, R>
+    {
+        private L l;
+        private R r;
+        public Pair(L l, R r)
+        {
+            this.l = l;
+            this.r = r;
+        }
+        public L    getL()
+        {
+            return l;
+        }
+        public R    getR()
+        {
+            return r;
+        }
+        public void setL(L l)
+        {
+            this.l = l;
+        }
+        public void setR(R r)
+        {
+            this.r = r;
+        }
+    }
+
+
+    static enum FieldType
+    {
+        UNDEFINED, SIMPLE, COMPOSITE, ENUM, SET, GROUP
+    }
+
+    static class Node
+    {
+        public final FieldType      type;
+        public final String         name;
+        public final PrimitiveType  ctype;
+        public final boolean        isArray;
+        public final Token          token;
+
+        public Node(Token token)
+        {
+            this(token.name(), token);
+        }
+
+        public Node(final String name, Token token)
+        {
+            switch (token.signal())
+            {
+                case ENCODING:        type = FieldType.SIMPLE;    break;
+                case BEGIN_ENUM:      type = FieldType.ENUM;      break;
+                case BEGIN_SET:       type = FieldType.SET;       break;
+                case BEGIN_COMPOSITE: type = FieldType.COMPOSITE; break;
+                case BEGIN_GROUP:     type = FieldType.GROUP;     break;
+                default:              type = FieldType.UNDEFINED; break;
+            }
+
+            this.name    = name;
+            this.ctype   = token.encoding().primitiveType();
+            this.isArray = token.arrayLength() > 1;
+            this.token   = token;
+        }
+    }
+
+    static class NodeList extends ArrayList<Node>
+    {
+        public Node add(final String name, Token token)
+        {
+            Node node = new Node(name, token);
+            super.add(node);
+            return node;
+        }
+        public Node add(Token token)
+        {
+            return add(token.name(), token);
+        }
+    }
+
+
 }
