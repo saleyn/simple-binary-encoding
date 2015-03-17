@@ -179,7 +179,7 @@ public class Cpp11Generator implements CodeGenerator
             try (final Writer out = outputManager.createOutput(className))
             {
                 out.append(generateFileHeader(namespace, className, typesToInclude));
-                out.append(generateClassDeclaration(className));
+                out.append(generateClassDeclaration(className, msgBaseClassName(namespace)));
                 out.append(generateMessageFlyweightCode(className, msgToken));
 
                 final List<Token> messageBody = tokens.subList(1, tokens.size() - 1);
@@ -295,23 +295,22 @@ public class Cpp11Generator implements CodeGenerator
             "\n" +
             indent + "class %1$s {\n" +
             indent + "private:\n" +
-            indent + "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
-            indent + "    mutable char*  m_buf;\n" +
-            indent + "    mutable size_t m_buf_size;\n" +
-            indent + "    mutable int    m_block_len;\n" +
-            indent + "    mutable int    m_count;\n" +
-            indent + "    mutable int    m_index;\n" +
-            indent + "    mutable int    m_version;\n" +
-            indent + "    mutable int*   m_pos_ptr;\n" +
-            indent + "    mutable int    m_offset;\n" +
-            indent + "    mutable %2$s m_dimensions;\n\n" +
+            indent + "    char*  m_buf;\n" +
+            indent + "    size_t m_buf_size;\n" +
+            indent + "    int    m_block_len;\n" +
+            indent + "    int    m_count;\n" +
+            indent + "    int    m_index;\n" +
+            indent + "    int    m_version;\n" +
+            indent + "    int*   m_pos_ptr;\n" +
+            indent + "    int    m_offset;\n" +
+            indent + "    %2$s m_dimensions;\n\n" +
             indent + "public:\n\n",
             formatClassName(groupName),
             dimensionsClassName
         ));
 
         sb.append(String.format(
-            indent + "    void WrapForDecode(const char* buffer, int* pos, int vsn, int bufsz) const {\n" +
+            indent + "    void WrapForDecode(const char* buffer, int* pos, int vsn, int bufsz) {\n" +
             indent + "        m_buf        = const_cast<char*>(buffer);\n" +
             indent + "        m_buf_size   = bufsz;\n" +
             indent + "        m_dimensions.Wrap(m_buf, *pos, vsn, bufsz);\n" +
@@ -361,7 +360,7 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            indent + "    const %1$s& Next() const {\n" +
+            indent + "    %1$s& Next() {\n" +
             indent + "        m_offset = *m_pos_ptr;\n" +
             indent + "        if (SBE_BOUNDS_CHECK_EXPECT(( (m_offset + m_block_len) > long(m_buf_size) ),0))\n" +
             indent + "            throw std::runtime_error(\"buffer too short to support next group index [E108]\");\n" +
@@ -403,7 +402,7 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "\n" +
-            indent + "    const %1$s& %2$s() const {\n" +
+            indent + "    %1$s& %2$s() {\n" +
             indent + "        m_%2$s.WrapForDecode(m_buf, m_pos_ptr, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n",
@@ -541,7 +540,7 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            "    sbe_int64_t %1$s_len()            const {\n" +
+            "    int64_t %1$s_len()                const {\n" +
                     "%2$s" +
             "        return %3$s(*((%4$s *)(m_buf + Position())));\n" +
             "    }\n\n",
@@ -565,6 +564,7 @@ public class Cpp11Generator implements CodeGenerator
 
             out.append(String.format(
                 "\n" +
+                "    %2$s Value() const { return *((%2$s *)(m_buf + m_offset)); }\n" +
                 "    %1$s& Clear() {\n" +
                 "        *((%2$s *)(m_buf + m_offset)) = 0;\n" +
                 "        return *this;\n" +
@@ -595,7 +595,7 @@ public class Cpp11Generator implements CodeGenerator
             out.append(generateEnumLookupMethod(
                            tokens.subList(1, tokens.size() - 1), enumToken
                        ));
-            out.append(generateEnumToStringMethod(tokens.subList(1, tokens.size() - 1)));
+            out.append(generateEnumToStringMethod(enumToken, tokens.subList(1, tokens.size() - 1)));
 
             out.append("};\n");
             fileEndIfdef(out, enumName, true);
@@ -645,17 +645,95 @@ public class Cpp11Generator implements CodeGenerator
     {
         final StringBuilder sb = new StringBuilder();
 
+        if (isGroup)
+        {
+            sb.append(String.format(
+                indent + "    std::string InfoGrpSep() {\n" +
+                indent + "        std::stringstream s;\n" +
+                indent + "        s << '|' << std::setw(%1$d) << ' ';\n" +
+                indent + "        s << '|' << std::setw(6) << '|';\n" +
+                indent + "        s << \"--[\"      << std::setw(3) << std::right;\n" +
+                indent + "        s << Index()    << '/' << std::setw(3) << std::left;\n" +
+                indent + "        s << Count()    << ']' << std::string(%2$d-11, '-');\n" +
+                indent + "        s << '|'        << std::right     << std::string(%3$d-strlen(Name()), '-') << \"[ \";\n" +
+                indent + "        s << Name()     << \" ] (hdrsz=\" << HeaderSize() << \", blen=\";\n" +
+                indent + "        s << BlockLen() << ')' << std::endl;\n" +
+                indent + "        return s.str();\n" +
+                indent + "    }\n",
+                TAG_PRINT_WIDTH,
+                TYPE_PRINT_WIDTH,
+                NAME_PRINT_WIDTH
+            ));
+        }
+        else
+        {
+            sb.append(String.format(
+                indent + "    std::string InfoMsgHeader() const {\n" +
+                indent + "        std::stringstream s;\n" +
+                indent + "        s << Name()  << \" (\" << SemanticType()   << \") {sz=\"  << BufSize()\n" +
+                indent + "          << \", blen=\" << BlockLen() << \", ver=\" << Version() << '}' << std::endl;\n" +
+                indent + "        return s.str();\n" +
+                indent + "    }\n" +
+                indent + "    static std::string InfoGrpSep(const char* name) {\n" +
+                indent + "        std::stringstream s;\n" +
+                indent + "        s << \"==[ group ]\" << std::string(%1$d-11, '=') << '|';\n" +
+                indent + "        s << std::string(%2$d-strlen(name), '=');\n" +
+                indent + "        s << \"[ \" << name << \" ]\" << std::endl;\n" +
+                indent + "        return s.str();\n" +
+                indent + "    }\n" +
+                indent + "    static std::string InfoFldDesc(const char* type, const char* name) {\n" +
+                indent + "        std::stringstream s;\n" +
+                indent + "        s << std::left  << std::setw(%1$3d) << type << '|';\n" +
+                indent + "        s << std::right << std::setw(%2$3d) << name << \" = \";\n" +
+                indent + "        return s.str();\n" +
+                indent + "    }\n",
+                TYPE_PRINT_WIDTH,
+                NAME_PRINT_WIDTH
+            ));
+        }
+
         sb.append(String.format(
+            indent + "    std::string InfoTag(int tag, int offset) {\n" +
+            indent + "        std::stringstream s;\n" +
+            indent + "        s << '|' << std::setw(%1$d) << std::left << tag;\n" +
+            indent + "        s << '|' << std::setw(5) << offset << std::right << '|';\n" +
+            indent + "        return s.str();\n" +
+            indent + "    }\n",
+            TAG_PRINT_WIDTH
+        ));
+
+        sb.append(String.format(
+            indent + "    // Visitor method for %1$s %2$s\n" +
+            indent + "    template <class Visitor>\n" +
+            indent + "    bool Visit(Visitor& visitor) {\n" +
+            indent + "        if (!visitor(%3$s, VisitInfo::Header, *this)) return false;\n",
+            name,
+            isGroup ? "group" : "message",
+            isGroup ? "VisitItem::Grp" : "VisitItem::Msg"
+        ));
+
+        for (final Node node : fields)
+        {
+            if (node.type == FieldType.GROUP)
+            {
+                sb.append(String.format(
+                    indent + "        for(auto& g = %1$s(); g.HasNext();)\n" +
+                    indent + "            if (!visitor(VisitItem::Grp, VisitInfo::Detail, g)) return false;\n",
+                    uncamelName(node.name)
+                ));
+            }
+        }
+
+        sb.append(String.format(
+            indent + "        return true;\n" +
+            indent + "    }\n\n" +
             indent + "    // Print method for %1$s %2$s\n" +
-            indent + "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n",
+            indent + "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n",
             name, isGroup ? "group" : "message"));
 
         if (!isGroup)
         {
-            sb.append(indent);
-            sb.append("        out << a.Name()  << \" (\" << a.SemanticType() << \") {sz=\"    << a.BufSize()\n");
-            sb.append(indent);
-            sb.append("            << \", blen=\" << a.BlockLen() << \", ver=\" << a.Version() << \"}\\n\";\n");
+            sb.append(indent).append("        out << a.InfoMsgHeader();\n");
         }
 
         for (final Node node : fields)
@@ -663,52 +741,29 @@ public class Cpp11Generator implements CodeGenerator
             final String uname = uncamelName(node.name);
 
             sb.append(String.format(
-                indent + "        out << '|' << std::setw(%1$3d) << std::right << a.%2$s_tag() << std::left;\n" +
-                indent + "        out << '|' << std::setw( 5) << a.%2$s_offset() << std::right << '|';\n",
-                TAG_PRINT_WIDTH,
+                indent + "        out << a.InfoTag(a.%1$s_tag(), a.%1$s_offset());\n",
                 uname
             ));
 
             if (node.type == FieldType.GROUP)
             {
                 sb.append(String.format(
-                    indent + "        out << \"==[ group ]\" << std::string(%4$d-11, '=') << '|' << std::string(%5$d-%6$d, '=');\n" +
-                    indent + "        out << \"[ \" << a.%7$s_name() << \" ]\\n\";\n" +
+                    indent + "        out << InfoGrpSep(a.%1$s_name());\n" +
                     indent + "        {\n" +
-                    indent + "            auto& g = a.%7$s();\n" +
-                    indent + "            while (g.HasNext()) {\n" +
-                    indent + "                g.Next();\n" +
-                    indent + "                out << '|' << std::setw(%3$d) << ' ';\n" +
-                    indent + "                out << '|' << std::setw(6) << '|';\n" +
-                    indent + "                out << \"--[\" << std::setw(3) << std::right;\n" +
-                    indent + "                out << g.Index()    << '/' << std::setw(3) << std::left;\n" +
-                    indent + "                out << g.Count()    << ']' << std::string(%4$d-11, '-');\n" +
-                    indent + "                out << '|' << std::right << std::string(%5$d-%6$d, '-') << \"[ \";\n" +
-                    indent + "                out << g.Name()     << \" ] (hdrsz=\" << g.HeaderSize() << \", blen=\"\n" +
-                    indent + "                    << g.BlockLen() << ')' << std::endl;\n" +
-                    indent + "                out << g;\n" +
-                    indent + "            }\n" +
+                    indent + "            auto& g = a.%1$s();\n" +
+                    indent + "            while (g.HasNext())\n" +
+                    indent + "                out << g.Next().InfoGrpSep() << g;\n" +
                     indent + "        }\n",
-                    NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - 13,
-                    NAME_PRINT_WIDTH + TYPE_PRINT_WIDTH - uname.length() - 13,
-                    TAG_PRINT_WIDTH,
-                    TYPE_PRINT_WIDTH,
-                    NAME_PRINT_WIDTH,
-                    uname.length(),
                     uname
                 ));
             }
             else
             {
                 sb.append(String.format(
-                    indent + "        out << std::left  << std::setw(%1$3d) << a.%3$s_meta(MetaAttr::SEMANTIC_TYPE) << '|';\n" +
-                    indent + "        out << std::right << std::setw(%2$3d) << \"%4$s\";\n" +
-                    indent + "        out << \" = \"; %5$s << std::endl;\n",
-                    TYPE_PRINT_WIDTH,
-                    NAME_PRINT_WIDTH,
+                    indent + "        out << InfoFldDesc(a.%1$s_meta(MetaAttribute::SEMANTIC_TYPE), a.%1$s_name());\n" +
+                    indent + "        out << %2$s << std::endl;\n",
                     uname,
-                    node.name,
-                    valOrNull(node, "out", "a.")
+                    valOrNull(node, "", "a.")
                 ));
             }
         }
@@ -718,34 +773,36 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence valOrNull(final Node node, final String stream, final String pfx)
+    private String castType(final Token token)
     {
-        if (node.type != FieldType.SIMPLE)
-        {
-            return String.format("%s << %s%s()", stream, pfx, uncamelName(node.name));
-        }
+        final String type = cpp11TypeName(token);
 
-        String castType;
-        final String type = cpp11TypeName(node.token);
-
-        switch (node.ctype) {
-            case CHAR:
-                castType = node.isArray ? "const char*" : "char";
-                break;
+        switch (token.encoding().primitiveType()) {
+            case CHAR:    return token.arrayLength() > 1 ? "const char*" : "char";
             case UINT8:
             case UINT16:
             case INT8:
-            case INT16:
-                castType = "int";
-                break;
-            default:
-                castType = type;
-                break;
+            case INT16:   return "int";
+            default:      return type;
+        }
+    }
+    private CharSequence valOrNull(final Node node, final String outPfx, final String valPfx)
+    {
+        final String uname = uncamelName(node.name);
+
+        if (node.type != FieldType.SIMPLE)
+        {
+            return String.format("%s%s%s()", outPfx, valPfx, uname);
         }
 
+        final String castType = castType(node.token);
+        final String value    = (castType.equals("const char*"))
+                ? String.format("std::string(%1$s%2$s(), %1$s%2$s_len())", valPfx, uname)
+                : String.format("ToString(%1$s%2$s())", valPfx, uname);
+
         return String.format(
-            "ValOrNull<%1$s>(%2$s, %3$s%4$s(), %3$s%4$s_null())",
-            castType, stream, pfx, uncamelName(node.name)
+            "%1$s(%2$s%3$s() == %2$s%3$s_null() ? \"<null>\" : %4$s)",
+            outPfx, valPfx, uname, value
         );
     }
 
@@ -756,26 +813,32 @@ public class Cpp11Generator implements CodeGenerator
         final String        eol = (i > 5 ? "\\n" : "");
 
         sb.append(String.format(
-            indent + "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n" +
+            indent + "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n" +
             indent + "        out << \"%1$s{\"%2$s;\n",
             name, eol
         ));
 
         for (final Node node : fields)
         {
-            final String comma = --i > 0 ? (eol.isEmpty() ? "<< \", \"" : "\",\"") : "";
+            final String comma = --i > 0 ? (eol.isEmpty() ? " << \", \"" : "\",\"") : "";
             sb.append(String.format(
-                indent + "        out << \"%1$s=\"; %2$s%3$s%4$s;\n",
+                indent + "        out << \"%1$s=\" << %2$s%3$s%4$s;\n",
                 node.name,
-                valOrNull(node, "out", "a."),
+                valOrNull(node, "", "a."),
                 comma,
                 eol
             ));
         }
-        sb.append(indent + "        out << \"}\";\n" +
+        sb.append(
+            indent + "        out << \"}\";\n" +
             indent + "        return out;\n" +
             indent + "    }\n\n"
         );
+        sb.append(String.format(
+            indent + "    std::string to_string() {\n" +
+            indent + "        std::stringstream s; s << *this; return s.str();\n" +
+            indent + "    }\n\n"
+        ));
         return sb;
     }
 
@@ -783,26 +846,31 @@ public class Cpp11Generator implements CodeGenerator
     {
         final StringBuilder sb = new StringBuilder();
         sb.append(String.format(
-            "    friend inline std::ostream& operator<< (std::ostream& out, const %1$s& a) {\n" +
-            "        std::vector<std::string> v;\n",
+            "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n" +
+            "        int i = 0;\n",
             name
         ));
         int maxWid = Math.max(
-            1, choices.stream().mapToInt(String::length).summaryStatistics().getMax()
+            1, choices.stream().mapToInt(s -> uncamelName(s).length()).summaryStatistics().getMax()
         );
 
         for (final String s : choices)
         {
-            final String fmt = "%-" + (maxWid - s.length() + 1) + "s";
+            final String uname = uncamelName(s);
+            final String fmt = "%-" + (maxWid - uname.length() + 1) + "s";
             sb.append(String.format(
-            "        if (a.%s())" + fmt + "v.push_back(\"%s\");\n", uncamelName(s), " ", s));
+                "        if (a.%s())" + fmt + "out << (i++ ? \"|\" : \"\") << \"%s\";\n",
+                uname, " ", s));
         }
         sb.append(
-            "        int i=v.size();\n" +
-            "        for(auto& s : v) { out << s; if (--i) out << '|'; }\n" +
             "        return out;\n" +
             "    }\n\n"
         );
+        sb.append(String.format(
+            "    std::string to_string() {\n" +
+            "        std::stringstream s; s << *this; return s.str();\n" +
+            "    }\n\n"
+        ));
         return sb;
     }
 
@@ -891,23 +959,40 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateEnumToStringMethod(final List<Token> tokens)
+    private CharSequence generateEnumToStringMethod(final Token enumToken, final List<Token> tokens)
     {
-        final StringBuilder  sb = new StringBuilder();
-        final String defaultVal = "default";
-        final String nullVal    = "NULL_VALUE";
+        final PrimitiveType type = enumToken.encoding().primitiveType();
+        final String ctype       = cpp11TypeName(enumToken);
+        final StringBuilder  sb  = new StringBuilder();
+        final String defaultVal  = "default";
+        final String nullValStr  = "<null>";
 
         int maxWid = Collections.max(
             tokens.stream()
                   .collect(
-                      () -> new LinkedList<>(Arrays.asList(defaultVal.length() + 5)),
+                      () -> new LinkedList<>(Arrays.asList(defaultVal.length())),
                       (c, t) -> c.add(t.name().length()), LinkedList::addAll
                   ));
 
-        sb.append(
-            "    const char* c_str() const { return c_str(m_val); }\n" +
-            "    static const char* c_str(Value v) {\n" +
-            "        switch (v) {\n");
+        String value;
+        switch (type)
+        {
+            case CHAR:
+                value = "return std::string{0x27, m_val, 0x27}";
+                break;
+            case INT8:
+                value = "return (int)m_val > 32 && m_val < 127 ? std::string{0x27, m_val, 0x27} : std::string((int)m_val)";
+                break;
+            default:
+                value = "return std::to_string((%1$s)m_val)";
+        }
+        sb.append(String.format(
+            "    const char*  c_str() const { return c_str(m_val); }\n" +
+            "    std::string  str()   const { " + value + "; }\n" +
+            "    static const char*   c_str(Value v) {\n" +
+            "        switch (v) {\n",
+            ctype
+        ));
 
         for (final Token token : tokens)
         {
@@ -921,11 +1006,11 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(
             String.format(
-                "            %1$-" + (maxWid + 5) + "s: return \"%2$s\";\n" +
+                "            %1$-" + (5 + maxWid) + "s: return \"%2$s\";\n" +
                 "        }\n" +
                 "    }\n",
                 defaultVal,
-                nullVal
+                nullValStr
             )
         );
 
@@ -964,11 +1049,12 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "            case %1$-" + maxWid + "s: return NULL_VALUE;\n" +
-            "            default: throw std::runtime_error(\"unknown value for enum %2$s [E103]\");\n" +
+            "            %3$"  + (maxWid+5) + "s: throw std::runtime_error(\"unknown value for enum %2$s [E103]\");\n" +
             "        }\n" +
             "    }\n",
             nullVal,
-            enumName
+            enumName,
+            "default"
         ));
 
         return sb;
@@ -1039,6 +1125,11 @@ public class Cpp11Generator implements CodeGenerator
         return generateFileHeader(namespaceName, className, typesToInclude, true, true);
     }
 
+    private String msgBaseClassName(final String namespace)
+    {
+        return String.format("%sBase", namespace.toUpperCase());
+    }
+
     private void generateSbeMainInclude(final String namespace) throws IOException
     {
         final String fileName = "sbe";
@@ -1070,26 +1161,29 @@ public class Cpp11Generator implements CodeGenerator
             out.append(String.format(
                 (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
                 "namespace %1$s {\n\n" +
-                "    using sbe::MetaAttr;\n\n" +
-                "    inline const char* MetaAttrStr(MetaAttr a, const char* s1, const char* s2, const char* s3) {\n" +
+                "    /// Base class for all derived protocol messages\n" +
+                "    class %2$s {};\n\n" +
+                "    using sbe::MetaAttribute;\n\n" +
+                "    inline const char* MetaAttrStr(MetaAttribute a, const char* s1, const char* s2, const char* s3) {\n" +
                 "        const char* vals[] = {s1, s2, s3};\n" +
                 "        assert(std::size_t(a) < (sizeof(vals) / sizeof(vals[0])));\n" +
                 "        return vals[std::size_t(a)];\n" +
                 "    }\n\n" +
-                "template <class CastT, class T>\n" +
-                "inline std::ostream& ValOrNull(std::ostream& out, const T& a, const T& null) {\n" +
-                "    if      (a == null)                     out << \"<null>\";\n" +
-                "    else if (std::is_same<T, CastT>::value) out << a;\n" +
-                "    else                                    out << (CastT)a;\n" +
-                "    return out;\n" +
-                "}\n\n",
-                namespace
+                "    template <class T>\n" +
+                "    inline std::string ToString(T&&   a) { return std::to_string(std::forward<T&&>(a)); }\n" +
+                "    inline std::string ToString(char  a) { return std::string(1, a); }\n" +
+                "    inline std::string ToString(char* a) { return a; }\n" +
+                "    inline std::string ToString(const char* a)        { return a; }\n" +
+                "    inline std::string ToString(const std::string& a) { return a; }\n" +
+                "    enum class VisitItem { Msg, Grp };\n\n" +
+                "    enum class VisitInfo { Header, Detail };\n\n",
+                namespace,
+                msgBaseClassName(namespace)
             ));
 
             fileEndIfdef(out, fileName, true);
         }
     }
-
 
     private CharSequence generateFileHeader(final String namespaceName, final String className,
         final List<String> typesToInclude, boolean incDefines, boolean incNamespace)
@@ -1166,10 +1260,16 @@ public class Cpp11Generator implements CodeGenerator
 
     private CharSequence generateClassDeclaration(final String className)
     {
+        return generateClassDeclaration(className, "");
+    }
+
+    private CharSequence generateClassDeclaration(final String className, final String inheritFrom)
+    {
         return String.format(
-            "class %s {\n",
-            className
-        );
+            "class %s %s{\n",
+            className,
+            inheritFrom.isEmpty() ? "" : (" : public " + inheritFrom
+        ));
     }
 
     private CharSequence generateEnumDeclaration(final String name, final Token token, final List<Token> tokens)
@@ -1189,7 +1289,10 @@ public class Cpp11Generator implements CodeGenerator
             "    operator Value() const { return m_val; }\n" +
             "    bool     Empty() const { return m_val == NULL_VALUE; }\n\n" +
             "    inline friend std::ostream& operator<< (std::ostream& out, %1$s a) {\n" +
-            "        return out << %1$s::c_str(a);\n" +
+            "        return out << (a == NULL_VALUE ? \"<null>\" : a.str()) << \" (\" << a.%1$s::c_str() << ')';\n" +
+            "    }\n" +
+            "    std::string to_string() {\n" +
+            "        std::stringstream s; s << *this; return s.str();\n" +
             "    }\n",
             name,
             tokens.size(),
@@ -1478,10 +1581,9 @@ public class Cpp11Generator implements CodeGenerator
     {
         return String.format(
             "private:\n" +
-            "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
-            "    mutable char* m_buf;\n" +
-            "    mutable int   m_offset;\n" +
-            "    mutable int   m_version;\n\n" +
+            "    char* m_buf;\n" +
+            "    int   m_offset;\n" +
+            "    int   m_version;\n\n" +
             "public:\n" +
             "    %1$s() : m_buf(NULL), m_offset(0), m_version(0) {}\n\n" +
             "    %1$s(char* buffer, int offset, int vsn, int bufsz)\n" +
@@ -1492,10 +1594,6 @@ public class Cpp11Generator implements CodeGenerator
             "    }\n\n" +
             "    %1$s& Wrap(char* buffer, int offset, int vsn, int bufsz) {\n" +
             "        new (this) %1$s(buffer, offset, vsn, bufsz);\n" +
-            "        return *this;\n" +
-            "    }\n\n" +
-            "    const %1$s& Wrap(char* buffer, int offset, int vsn, int bufsz) const {\n" +
-            "        new (const_cast<%1$s*>(this)) %1$s(buffer, offset, vsn, bufsz);\n" +
             "        return *this;\n" +
             "    }\n\n" +
             "    static const int Size() { return %2$s; }\n\n",
@@ -1514,14 +1612,13 @@ public class Cpp11Generator implements CodeGenerator
 
         return String.format(
             "private:\n" +
-            "    // Fields are mutable because the class can be used for both encoding/decoding\n" +
-            "    mutable char*  m_buf;\n" +
-            "    mutable size_t m_buf_size;\n" +
-            "    mutable int    m_offset;\n" +
-            "    mutable int    m_position;\n" +
-            "    mutable int    m_block_len;\n" +
-            "    mutable int    m_version;\n" +
-            "    mutable int*   m_pos_ptr;\n\n" +
+            "    char*  m_buf;\n" +
+            "    size_t m_buf_size;\n" +
+            "    int    m_offset;\n" +
+            "    int    m_position;\n" +
+            "    int    m_block_len;\n" +
+            "    int    m_version;\n" +
+            "    int*   m_pos_ptr;\n\n" +
             "    %10$s(const %10$s&) {}\n" +
             "public:\n\n" +
             "    %10$s() : m_buf(NULL), m_buf_size(0), m_offset(0) {}\n\n" +
@@ -1548,8 +1645,8 @@ public class Cpp11Generator implements CodeGenerator
             "        m_pos_ptr       = &m_position;\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    const %10$s&\n" +
-            "    WrapForDecode(const char* buffer, int offset, int blk_len, int vsn, size_t bufsz) const {\n" +
+            "    %10$s&\n" +
+            "    WrapForDecode(const char* buffer, int offset, int blk_len, int vsn, size_t bufsz) {\n" +
             "        m_buf           = const_cast<char*>(buffer);\n" +
             "        m_offset        = offset;\n" +
             "        m_buf_size      = bufsz;\n" +
@@ -1564,7 +1661,7 @@ public class Cpp11Generator implements CodeGenerator
             "    }\n\n" +
             "    uint64_t    Position() const { return m_position; }\n" +
             "    void Position(uint64_t position) {\n" +
-            "        if (SBE_BOUNDS_CHECK_EXPECT((position > long(m_buf_size)), 0))\n" +
+            "        if (SBE_BOUNDS_CHECK_EXPECT((position > m_buf_size), 0))\n" +
             "            throw std::runtime_error(\"buffer too short [E100]\");\n" +
             "        m_position = position;\n" +
             "    }\n\n" +
@@ -1572,7 +1669,8 @@ public class Cpp11Generator implements CodeGenerator
             "    char*       Buffer()         { return m_buf; }\n" +
             "    const char* Buffer()   const { return m_buf; }\n" +
             "    size_t      BufSize()  const { return m_buf_size; }\n" +
-            "    int         Version()  const { return m_version; }\n",
+            "    int         Version()  const { return m_version; }\n" +
+            "    void        Rewind()         { Position(m_offset + m_block_len); }\n",
             blockLengthType,
             generateLiteral(ir.headerStructure().blockLengthType(), Integer.toString(token.size()), false, false),
             templateIdType,
@@ -1659,7 +1757,7 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "\n" +
-            indent + "    static const char* %1$s_meta(MetaAttr a) { return MetaAttrStr(a, \"%2$s\", \"%3$s\", \"%4$s\"); }\n",
+            indent + "    static const char* %1$s_meta(MetaAttribute a) { return MetaAttrStr(a, \"%2$s\", \"%3$s\", \"%4$s\"); }\n",
             uncamelName(token.name()),
             epoch,
             timeUnit,
@@ -1731,7 +1829,7 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "private:\n" +
-            indent + "    mutable %1$s m_%2$s;\n\n" +
+            indent + "    %1$s m_%2$s;\n\n" +
             indent + "public:\n",
             bitsetName,
             uncamelName(propertyName)
@@ -1740,10 +1838,6 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    %1$s& %2$s() {\n" +
-            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
-            indent + "        return m_%2$s;\n" +
-            indent + "    }\n" +
-            indent + "    const %1$s& %2$s() const {\n" +
             indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n\n",
@@ -1765,7 +1859,7 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "private:\n" +
-            indent + "    mutable %1$s m_%2$s;\n\n" +
+            indent + "    %1$s m_%2$s;\n\n" +
             indent + "public:\n",
             compositeName,
             uncamelName(propertyName)
@@ -1774,10 +1868,6 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    %1$s& %2$s() {\n" +
-            indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
-            indent + "        return m_%2$s;\n" +
-            indent + "    }\n" +
-            indent + "    const %1$s& %2$s() const {\n" +
             indent + "        m_%2$s.Wrap(m_buf, m_offset + %3$d, m_version, m_buf_size);\n" +
             indent + "        return m_%2$s;\n" +
             indent + "    }\n",
