@@ -1358,9 +1358,9 @@ public class Cpp11Generator implements CodeGenerator
 
         final String cpp11TypeName = cpp11TypeName(token, true);
         final CharSequence nullValueString = generateNullValueLiteral(token, true);
-        int   pad = cpp11TypeName.length();
         sb.append(String.format(
-            indent + "    bool   %2$" + pad + "s_is_null() const { return %2$s() == %2$s_null(); }\n" +
+            indent + "    bool   %2$s_is_null() const { return " +
+            (token.arrayLength() > 1 ? "(%1$s)" : "") + "%2$s() == %2$s_null(); }\n" +
             indent + "    static %1$s %2$s_null()     { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
