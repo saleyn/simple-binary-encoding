@@ -1360,21 +1360,22 @@ public class Cpp11Generator implements CodeGenerator
         final CharSequence nullValueString = generateNullValueLiteral(token, true);
 
         sb.append(String.format(
-            indent + "    static %1$s %2$s_null() { return %3$s; }\n",
+            indent + "    bool   %2$s_is_null() const { return %2$s() == %2$s_null(); }\n",
+            indent + "    static %1$s %2$s_null()     { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
             nullValueString
         ));
 
         sb.append(String.format(
-            indent + "    static %1$s %2$s_min()  { return %3$s; }\n",
+            indent + "    static %1$s %2$s_min()      { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
             generateLiteral(token, token.encoding().applicableMinValue().toString(), true)
         ));
 
         sb.append(String.format(
-            indent + "    static %1$s %2$s_max()  { return %3$s; }\n",
+            indent + "    static %1$s %2$s_max()      { return %3$s; }\n",
             cpp11TypeName,
             uncamelName(propertyName),
             generateLiteral(token, token.encoding().applicableMaxValue().toString(), true)
