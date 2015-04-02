@@ -289,7 +289,7 @@ public class Cpp11Generator implements CodeGenerator
         final StringBuilder sb, final String groupName, final List<Token> tokens, final int index, final String indent)
     {
         final String  dimensionsClassName = formatClassName(tokens.get(index + 1).name());
-        final Integer dimensionHeaderSize = Integer.valueOf(tokens.get(index + 1).size());
+        final int     dimensionHeaderSize = tokens.get(index + 1).size();
 
         sb.append(String.format(
             "\n" +
@@ -325,7 +325,7 @@ public class Cpp11Generator implements CodeGenerator
             dimensionHeaderSize
         ));
 
-        final Integer blockLen        = Integer.valueOf(tokens.get(index).size());
+        final int     blockLen        = tokens.get(index).size();
         final String  typeForBlkLen   = cpp11TypeName(tokens.get(index + 2));
         final String  typeForNumInGrp = cpp11TypeName(tokens.get(index + 3));
 
@@ -778,7 +778,7 @@ public class Cpp11Generator implements CodeGenerator
         final String type = cpp11TypeName(token);
 
         switch (token.encoding().primitiveType()) {
-            case CHAR:    return token.arrayLength() > 1 ? "const char*" : "char";
+            case CHAR:    return isArray(token) ? "const char*" : "char";
             case UINT8:
             case UINT16:
             case INT8:
@@ -801,7 +801,7 @@ public class Cpp11Generator implements CodeGenerator
                 : String.format("ToString(%1$s%2$s())", valPfx, uname);
 
         return String.format(
-            "%1$s(%2$s%3$s() == %2$s%3$s_null() ? \"<null>\" : %4$s)",
+            "%1$s(%2$s%3$s_is_null() ? \"<null>\" : %4$s)",
             outPfx, valPfx, uname, value
         );
     }
@@ -1357,28 +1357,32 @@ public class Cpp11Generator implements CodeGenerator
         final StringBuilder sb = new StringBuilder();
 
         final String cpp11TypeName = cpp11TypeName(token, true);
-        final CharSequence nullValueString = generateNullValueLiteral(token, true);
+        final String cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
         sb.append(String.format(
             indent + "    bool   %2$s_is_null() const { return " +
-            (token.arrayLength() > 1 ? "(%1$s)" : "") + "%2$s() == %2$s_null(); }\n" +
+            (((token.encoding().primitiveType()==PrimitiveType.CHAR && token.arrayLength() > 1) ||
+              (token.encoding().primitiveType()==PrimitiveType.INT8 && token.arrayLength() > 1)) ? "%2$s()[0]" : "%2$s()") +
+            " == %2$s_null(); }\n" +
             indent + "    static %1$s %2$s_null()     { return %3$s; }\n",
-            cpp11TypeName,
+            cpp11NonArrayType,
             uncamelName(propertyName),
-            nullValueString
+            generateNullValueLiteral(token, false, false)
         ));
 
         sb.append(String.format(
             indent + "    static %1$s %2$s_min()      { return %3$s; }\n",
-            cpp11TypeName,
+            cpp11NonArrayType,
             uncamelName(propertyName),
-            generateLiteral(token, token.encoding().applicableMinValue().toString(), true)
+            generateLiteral(token.encoding().primitiveType(),
+                            token.encoding().applicableMinValue().toString(), false, false)
         ));
 
         sb.append(String.format(
             indent + "    static %1$s %2$s_max()      { return %3$s; }\n",
-            cpp11TypeName,
+            cpp11NonArrayType,
             uncamelName(propertyName),
-            generateLiteral(token, token.encoding().applicableMaxValue().toString(), true)
+            generateLiteral(token.encoding().primitiveType(),
+                            token.encoding().applicableMaxValue().toString(), false, false)
         ));
 
         return sb;
@@ -1427,18 +1431,20 @@ public class Cpp11Generator implements CodeGenerator
     private CharSequence generateArrayProperty(
         final String containingClassName, final String propertyName, final Token token, final String indent)
     {
-        final String cpp11Type         = cpp11TypeName(token);
-        final String cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
-        final Integer offset = Integer.valueOf(token.offset());
+        final String  cpp11Type         = cpp11TypeName(token);
+        final String  cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
+        final Integer offset            = token.offset();
 
         final StringBuilder sb = new StringBuilder();
 
-        sb.append(String.format(
-            "\n" +
-            indent + "    static const int %1$s_len() { return %2$d; }\n",
-            uncamelName(propertyName),
-            Integer.valueOf(token.arrayLength())
-        ));
+        sb.append(
+            String.format(
+                "\n" +
+                indent + "    static const int %1$s_len() { return %2$d; }\n",
+                uncamelName(propertyName),
+                token.arrayLength()
+            )
+        );
 
         sb.append(String.format(
             indent + "    const char* %1$s() const {\n" +
@@ -1512,7 +1518,7 @@ public class Cpp11Generator implements CodeGenerator
     {
         final String cpp11TypeName = cpp11TypeName(token);
 
-        if (token.encoding().primitiveType() != PrimitiveType.CHAR)
+        if (token.encoding().primitiveType() != PrimitiveType.CHAR || token.arrayLength() < 2)
         {
             return String.format(
                 "\n" +
@@ -1880,7 +1886,7 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateNullValueLiteral(final Token token, boolean isConst)
+    private CharSequence generateNullValueLiteral(final Token token, boolean isArray, boolean isConst)
     {
         // Visual C++ does not handle minimum integer values properly
         // See: http://msdn.microsoft.com/en-us/library/4kh09110.aspx
@@ -1911,14 +1917,18 @@ public class Cpp11Generator implements CodeGenerator
                     return "std::numeric_limits<uint64_t>::max()";
             }
         }
-        return generateLiteral(token, token.encoding().applicableNullValue().toString(), isConst);
+        return generateLiteral(token.encoding().primitiveType(), token.encoding().applicableNullValue().toString(), isArray, isConst);
     }
 
+    private boolean isArray(final Token token)
+    {
+        return token.arrayLength() > 1;
+    }
 
     private CharSequence generateLiteral(final Token token, final String value, boolean isConst)
     {
         final PrimitiveType type = token.encoding().primitiveType();
-        return generateLiteral(type, value, token.arrayLength() > 1, isConst);
+        return generateLiteral(type, value, isArray(token), isConst);
     }
 
     private CharSequence generateLiteral(final PrimitiveType type, final String value, boolean isArray, boolean isConst)
