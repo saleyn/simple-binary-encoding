@@ -564,7 +564,7 @@ public class Cpp11Generator implements CodeGenerator
 
             out.append(String.format(
                 "\n" +
-                "    %2$s Value() const { return *((%2$s *)(m_buf + m_offset)); }\n" +
+                "    %2$s Value()   const { return *((%2$s *)(m_buf + m_offset)); }\n" +
                 "    %1$s& Clear() {\n" +
                 "        *((%2$s *)(m_buf + m_offset)) = 0;\n" +
                 "        return *this;\n" +
@@ -978,10 +978,10 @@ public class Cpp11Generator implements CodeGenerator
         switch (type)
         {
             case CHAR:
-                value = "return std::string{0x27, m_val, 0x27}";
+                value = "return std::string{0x27, (char)m_val, 0x27}";
                 break;
             case INT8:
-                value = "return (int)m_val > 32 && m_val < 127 ? std::string{0x27, m_val, 0x27} : std::string((int)m_val)";
+                value = "return (int)m_val > 32 && m_val < 127 ? std::string{0x27, (char)m_val, 0x27} : std::string((int)m_val)";
                 break;
             default:
                 value = "return std::to_string((%1$s)m_val)";
@@ -1603,9 +1603,10 @@ public class Cpp11Generator implements CodeGenerator
             "        new (this) %1$s(buffer, offset, vsn, bufsz);\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    static const int Size() { return %2$s; }\n\n",
+            "    int        Version() const { return m_version; }\n" +
+            "    static int Size()          { return %2$s;      }\n\n",
             className,
-            Integer.valueOf(size)
+            size
         );
     }
 
