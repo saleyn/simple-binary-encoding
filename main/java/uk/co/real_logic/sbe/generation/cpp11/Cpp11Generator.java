@@ -693,7 +693,7 @@ public class Cpp11Generator implements CodeGenerator
         }
 
         sb.append(String.format(
-            indent + "    std::string InfoTag(int tag, int offset) {\n" +
+            indent + "    std::string InfoTag(int tag, int offset) const {\n" +
             indent + "        std::stringstream s;\n" +
             indent + "        s << '|' << std::setw(%1$d) << std::left << tag;\n" +
             indent + "        s << '|' << std::setw(5) << offset << std::right << '|';\n" +
@@ -727,44 +727,97 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             indent + "        return true;\n" +
             indent + "    }\n\n" +
-            indent + "    // Print method for %1$s %2$s\n" +
-            indent + "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n",
+            indent + "    // Print method for non-group fields in the %1$s %2$s\n" +
+            indent + "    std::ostream& PrintFields(std::ostream& out) {\n",
             name, isGroup ? "group" : "message"));
 
         if (!isGroup)
         {
-            sb.append(indent).append("        out << a.InfoMsgHeader();\n");
+            sb.append(indent).append("        out << InfoMsgHeader();\n");
         }
+
+        boolean hasGroups = false;
 
         for (final Node node : fields)
         {
             final String uname = uncamelName(node.name);
 
-            sb.append(String.format(
-                indent + "        out << a.InfoTag(a.%1$s_tag(), a.%1$s_offset());\n",
-                uname
-            ));
-
-            if (node.type == FieldType.GROUP)
+            if (node.type != FieldType.GROUP)
             {
                 sb.append(String.format(
-                    indent + "        out << InfoGrpSep(a.%1$s_name());\n" +
-                    indent + "        {\n" +
-                    indent + "            auto& g = a.%1$s();\n" +
-                    indent + "            while (g.HasNext())\n" +
-                    indent + "                out << g.Next().InfoGrpSep() << g;\n" +
-                    indent + "        }\n",
-                    uname
+                    indent + "        out << InfoTag(%1$s_tag(), %1$s_offset());\n" +
+                    indent + "        out << InfoFldDesc(%1$s_meta(MetaAttribute::SEMANTIC_TYPE), %1$s_name());\n" +
+                    indent + "        out << %2$s << std::endl;\n",
+                    uname,
+                    valOrNull(node, "", "")
                 ));
             }
             else
             {
+                hasGroups = true;
+            }
+        }
+
+
+        sb.append(String.format(
+            indent + "        return out;\n" +
+            indent + "    }\n"
+        ));
+
+        if (hasGroups)
+        {
+            sb.append(String.format(
+                indent + "    // Print group fields for %1$s %2$s\n" +
+                indent + "    template <class Group, class Predicate>\n" +
+                indent + "    void PrintGroup(std::ostream& out, Group& g, int tag, int offset, const Predicate& pred) {\n" +
+                indent + "        bool separator = false;\n" +
+                indent + "        while(g.HasNext()) {\n" +
+                indent + "            if (!pred(*this, g.Next())) continue;\n" +
+                indent + "            if (!separator) {\n" +
+                indent + "                out << InfoTag(tag, offset);\n" +
+                indent + "                out << InfoGrpSep(g.Name());\n" +
+                indent + "                separator = true;\n" +
+                indent + "            }\n" +
+                indent + "            out << g.InfoGrpSep() << g;\n" +
+                indent + "        }\n" +
+                indent + "    }\n",
+                name, isGroup ? "group" : "message"));
+        }
+
+        sb.append(String.format(
+            indent + "    template <class Predicate>\n" +
+            indent + "    std::ostream& PrintGroups(std::ostream& out, const Predicate& pred) {\n",
+            name, isGroup ? "group" : "message"));
+
+        for (final Node node : fields)
+        {
+            final String uname = uncamelName(node.name);
+
+            if (node.type == FieldType.GROUP)
+            {
                 sb.append(String.format(
-                    indent + "        out << InfoFldDesc(a.%1$s_meta(MetaAttribute::SEMANTIC_TYPE), a.%1$s_name());\n" +
-                    indent + "        out << %2$s << std::endl;\n",
-                    uname,
-                    valOrNull(node, "", "a.")
+                    indent + "        PrintGroup(out, %1$s(), %1$s_tag(), %1$s_offset(), pred);\n",
+                    uname
                 ));
+            }
+        }
+
+        sb.append(String.format(
+            indent + "        return out;\n" +
+            indent + "    }\n" +
+            indent + "    // Print method for %1$s %2$s\n" +
+            indent + "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n" +
+            indent + "        a.PrintFields(out);\n",
+            name, isGroup ? "group" : "message"));
+
+        for (final Node node : fields)
+        {
+            if (node.type == FieldType.GROUP)
+            {
+                sb.append(String.format(
+                    indent + "        a.PrintGroups(out, [](auto& msg, auto& grp) { return true; });\n"
+                ));
+                break;
             }
         }
 
@@ -847,6 +900,7 @@ public class Cpp11Generator implements CodeGenerator
         final StringBuilder sb = new StringBuilder();
         sb.append(String.format(
             "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n" +
+            "        out << \"0x\" << std::hex << size_t(a.Value()) << std::dec << \" (\";\n" +
             "        int i = 0;\n",
             name
         ));
@@ -863,7 +917,7 @@ public class Cpp11Generator implements CodeGenerator
                 uname, " ", s));
         }
         sb.append(
-            "        return out;\n" +
+            "        return out << ')';\n" +
             "    }\n\n"
         );
         sb.append(String.format(
@@ -878,6 +932,7 @@ public class Cpp11Generator implements CodeGenerator
         List<String> choices)
     {
         final StringBuilder sb = new StringBuilder();
+        int maxwid = 0;
 
         for (final Token token : tokens)
         {
@@ -890,6 +945,7 @@ public class Cpp11Generator implements CodeGenerator
                     token.encoding().byteOrder(), token.encoding().primitiveType());
 
                 choices.add(choiceName);
+                maxwid = Math.max(choiceName.length(), maxwid);
 
                 sb.append(String.format(
                     "    bool %1$s() const {\n" +
@@ -919,6 +975,31 @@ public class Cpp11Generator implements CodeGenerator
             }
         }
 
+        if (!choices.isEmpty())
+        {
+            sb.append(String.format(
+                "    enum class Flags {\n" +
+                "        %-" + maxwid + "s = 0,\n",
+                "EMPTY"
+            ));
+
+            for (final Token token : tokens)
+            {
+                if (token.signal() == Signal.CHOICE)
+                {
+                    final String choiceName = token.name();
+                    final String choiceBitPosition = token.encoding().constValue().toString();
+
+                    sb.append(String.format(
+                        "        %1$-" + maxwid + "s = 1L << %2$s,\n",
+                        choiceName,
+                        choiceBitPosition
+                    ));
+                }
+            }
+
+            sb.append("    };\n\n");
+        }
         return sb;
     }
 
