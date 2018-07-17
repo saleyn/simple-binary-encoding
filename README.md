@@ -1,5 +1,6 @@
 Simple Binary Encoding (SBE)
 ============================
+This fork inctroduces a C++11 capable code generator that facilitates easier metaprogramming type inspection of generated types, as well as easier printing of decoded data.
 
 [SBE](http://www.fixtradingcommunity.org/pg/file/fplpo/read/1196757/simple-binary-encoding-release-candidate-2) is OSI layer 6 presentation for encoding and decoding application messages in binary format for low-latency applications.
 
