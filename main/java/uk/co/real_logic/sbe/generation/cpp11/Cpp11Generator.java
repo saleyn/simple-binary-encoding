@@ -647,7 +647,18 @@ public class Cpp11Generator implements CodeGenerator
 
         if (isGroup)
         {
+            boolean hasSID = false;
+            for (final Node node : fields)
+            {
+                if (node.name.equals("securityID"))
+                {
+                    hasSID = true;
+                    break;
+                }
+            }
+
             sb.append(String.format(
+                indent + "    static constexpr bool HasSecurityID() { return %4$s; }\n\n" +
                 indent + "    std::string InfoGrpSep() {\n" +
                 indent + "        std::stringstream s;\n" +
                 indent + "        s << '|' << std::setw(%1$d) << ' ';\n" +
@@ -659,15 +670,27 @@ public class Cpp11Generator implements CodeGenerator
                 indent + "        s << Name()     << \" ] (hdrsz=\" << HeaderSize() << \", blen=\";\n" +
                 indent + "        s << BlockLen() << ')' << std::endl;\n" +
                 indent + "        return s.str();\n" +
-                indent + "    }\n",
+                indent + "    }\n\n",
                 TAG_PRINT_WIDTH,
                 TYPE_PRINT_WIDTH,
-                NAME_PRINT_WIDTH
+                NAME_PRINT_WIDTH,
+                hasSID ? "true" : "false"
             ));
         }
         else
         {
+            boolean hasTransactTime = false;
+            for (final Node node : fields)
+            {
+                if (node.name.equals("transactTime"))
+                {
+                    hasTransactTime = true;
+                    break;
+                }
+            }
+
             sb.append(String.format(
+                indent + "    static constexpr bool HasTransactTime() { return %3$s; }\n\n" +
                 indent + "    std::string InfoMsgHeader() const {\n" +
                 indent + "        std::stringstream s;\n" +
                 indent + "        s << Name()  << \" (\" << SemanticType()   << \") {sz=\"  << BufSize()\n" +
@@ -688,7 +711,8 @@ public class Cpp11Generator implements CodeGenerator
                 indent + "        return s.str();\n" +
                 indent + "    }\n",
                 TYPE_PRINT_WIDTH,
-                NAME_PRINT_WIDTH
+                NAME_PRINT_WIDTH,
+                hasTransactTime ? "true" : "false"
             ));
         }
 
@@ -702,11 +726,23 @@ public class Cpp11Generator implements CodeGenerator
             TAG_PRINT_WIDTH
         ));
 
+        boolean hasGroups = false;
+
+        for (final Node node : fields)
+        {
+            if (node.type == FieldType.GROUP)
+            {
+                hasGroups = true;
+                break;
+            }
+        }
+
         sb.append(String.format(
             indent + "    // Visitor method for %1$s %2$s\n" +
             indent + "    template <class Visitor>\n" +
             indent + "    bool Visit(Visitor& visitor) {\n" +
-            indent + "        if (!visitor(%3$s, VisitInfo::Header, *this)) return false;\n",
+            (hasGroups ? indent + "        bool printed = false;\n" : "") +
+            indent + "        if (!visitor(std::make_tuple(%3$s, VisitInfo::Header, this))) return false;\n",
             name,
             isGroup ? "group" : "message",
             isGroup ? "VisitItem::Grp" : "VisitItem::Msg"
@@ -717,15 +753,20 @@ public class Cpp11Generator implements CodeGenerator
             if (node.type == FieldType.GROUP)
             {
                 sb.append(String.format(
-                    indent + "        for(auto& g = %1$s(); g.HasNext();)\n" +
-                    indent + "            if (!visitor(VisitItem::Grp, VisitInfo::Detail, g)) return false;\n",
+                    indent + "        for(auto& g = %1$s(); g.HasNext();) {\n" +
+                    indent + "            auto& grp = g.Next();\n" +
+                    indent + "            if (!visitor(std::make_tuple(VisitItem::Grp, VisitInfo::Detail, &grp))) return false;\n" +
+                    indent + "            printed = true;\n" +
+                    indent + "        }\n" +
+                    indent + "        if (printed) return true;\n",
                     uncamelName(node.name)
                 ));
             }
         }
 
         sb.append(String.format(
-            indent + "        return true;\n" +
+            indent + "        NoGroups grp;\n" +
+            indent + "        return visitor(std::make_tuple(VisitItem::Grp, VisitInfo::Detail, &grp));\n" +
             indent + "    }\n\n" +
             indent + "    // Print method for non-group fields in the %1$s %2$s\n" +
             indent + "    std::ostream& PrintFields(std::ostream& out) {\n",
@@ -735,8 +776,6 @@ public class Cpp11Generator implements CodeGenerator
         {
             sb.append(indent).append("        out << InfoMsgHeader();\n");
         }
-
-        boolean hasGroups = false;
 
         for (final Node node : fields)
         {
@@ -751,10 +790,6 @@ public class Cpp11Generator implements CodeGenerator
                     uname,
                     valOrNull(node, "", "")
                 ));
-            }
-            else
-            {
-                hasGroups = true;
             }
         }
 
@@ -1257,7 +1292,8 @@ public class Cpp11Generator implements CodeGenerator
                 "    inline std::string ToString(const char* a)        { return a; }\n" +
                 "    inline std::string ToString(const std::string& a) { return a; }\n" +
                 "    enum class VisitItem { Msg, Grp };\n\n" +
-                "    enum class VisitInfo { Header, Detail };\n\n",
+                "    enum class VisitInfo { Header, Detail };\n\n" +
+                "    struct NoGroups {};\n\n",
                 namespace,
                 msgBaseClassName(namespace)
             ));
