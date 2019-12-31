@@ -54,6 +54,7 @@ public class Cpp11Generator implements CodeGenerator
     private final String        outerNamespace;
     private final String        copyright;
     private final String        outputSubdir;
+    private final boolean       with_utxx;
 
     public Cpp11Generator(final Ir ir, final String subdir, final OutputManager outputManager)
         throws IOException
@@ -66,6 +67,8 @@ public class Cpp11Generator implements CodeGenerator
         this.outputSubdir   = subdir;
         this.outerNamespace = System.getProperty("sbe.target.namespace0");
         this.copyright      = System.getProperty("sbe.target.copyright");
+        String val          = System.getProperty("sbe.target.with_utxx"); // Use utxx library
+        this.with_utxx      = val != null && val.equalsIgnoreCase("true");
     }
 
     public String uncamelName(final String name)
@@ -363,7 +366,7 @@ public class Cpp11Generator implements CodeGenerator
             indent + "    %1$s& Next() {\n" +
             indent + "        m_offset = *m_pos_ptr;\n" +
             indent + "        if (SBE_BOUNDS_CHECK_EXPECT(( (m_offset + m_block_len) > long(m_buf_size) ),0))\n" +
-            indent + "            throw std::runtime_error(\"buffer too short to support next group index [E108]\");\n" +
+            indent + "            "+runtimeError("buffer too short to support next group index [E108]")+";\n" +
             indent + "        *m_pos_ptr = m_offset + m_block_len;\n" +
             indent + "        ++m_index;\n\n" +
             indent + "        return *this;\n" +
@@ -1165,12 +1168,13 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "            case %1$-" + maxWid + "s: return NULL_VALUE;\n" +
-            "            %3$"  + (maxWid+5) + "s: throw std::runtime_error(\"unknown value for enum %2$s [E103]\");\n" +
+            "            %3$"   + (maxWid+5) + "s: %4$s;\n" +
             "        }\n" +
             "    }\n",
             nullVal,
             enumName,
-            "default"
+            "default",
+            runtimeError("unknown value for enum "+enumName+" [E103]")
         ));
 
         return sb;
@@ -1272,7 +1276,9 @@ public class Cpp11Generator implements CodeGenerator
                 "#endif\n" +
                 "#include <sbe/sbe.hpp>\n" +
                 "#include <type_traits>\n" +
-                "#include <ostream>\n\n");
+                "#include <ostream>\n");
+
+            out.append(with_utxx ? "#include <utxx/error.hpp>\n\n" : "\n");
 
             out.append(String.format(
                 (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
@@ -1545,12 +1551,21 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
+    private String runtimeError(final String val)
+    {
+        return String.format("%1$s(\"%2$s\")",
+                             with_utxx ? "UTXX_THROW_RUNTIME_ERROR"
+                                       : "throw std::runtime_error",
+                             val);
+    }
+
     private CharSequence generateArrayProperty(
         final String containingClassName, final String propertyName, final Token token, final String indent)
     {
         final String  cpp11Type         = cpp11TypeName(token);
         final String  cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
         final Integer offset            = token.offset();
+        final String  propName          = uncamelName(propertyName);
 
         final StringBuilder sb = new StringBuilder();
 
@@ -1568,7 +1583,7 @@ public class Cpp11Generator implements CodeGenerator
                               "%2$s" +
             indent + "        return (m_buf + m_offset + %3$d);\n" +
             indent + "    }\n\n",
-            uncamelName(propertyName),
+            propName,
             generateTypeFieldNotPresentCondition(token.version(), indent),
             offset
         ));
@@ -1576,12 +1591,12 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             indent + "    %1$s %2$s(int idx) const {\n" +
             indent + "        if (idx < 0 || idx >= %3$d)\n" +
-            indent + "            throw std::runtime_error(\"index out of range for %2$s [E104]\");\n\n" +
+            indent + "            %2$s;\n\n" +
                              "%4$s" +
             indent + "        return %5$s(*((%1$s*)(m_buf + m_offset + %6$d + (idx * %7$d))));\n" +
             indent + "    }\n\n",
             cpp11NonArrayType,
-            uncamelName(propertyName),
+            runtimeError("index out of range for "+uncamelName(propertyName)+" [E104]"),
             token.arrayLength(),
             generateFieldNotPresentCondition(token, indent, true),
             formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType()),
@@ -1592,29 +1607,32 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             indent + "    void %1$s(int idx, %2$s val) {\n" +
             indent + "        if (idx < 0 || idx >= %3$d)\n" +
-            indent + "            throw std::runtime_error(\"index out of range for %1$s [E105]\");\n\n" +
+            indent + "            %7$s;\n\n" +
             indent + "        *((%2$s*)(m_buf + m_offset + %4$d + (idx * %5$d))) = %6$s(val);\n" +
             indent + "    }\n\n",
-            uncamelName(propertyName),
+            propName,
             cpp11NonArrayType,
             token.arrayLength(),
             offset,
             token.encoding().primitiveType().size(),
-            formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType())
+            formatByteOrderEncoding(token.encoding().byteOrder(),
+                token.encoding().primitiveType()),
+            runtimeError("index out of range for "+propName+" [E105]")
         ));
 
         sb.append(String.format(
             indent + "    int %1$s(char* dst, const int length) const {\n" +
             indent + "        if (length > %2$d)\n" +
-            indent + "             throw std::runtime_error(\"length too large for get %1$s [E106]\");\n\n" +
+            indent + "             %5$s;\n\n" +
                              "%3$s" +
             indent + "        ::memcpy(dst, m_buf + m_offset + %4$d, length);\n" +
             indent + "        return length;\n" +
             indent + "    }\n\n",
-            uncamelName(propertyName),
+            propName,
             token.arrayLength(),
             generateArrayFieldNotPresentCondition(token.version(), indent),
-            offset
+            offset,
+            runtimeError("length too large for get "+propName+" [E106]")
         ));
 
         sb.append(String.format(
@@ -1714,7 +1732,7 @@ public class Cpp11Generator implements CodeGenerator
             "        : m_buf(buffer), m_offset(offset), m_version(vsn)\n" +
             "    {\n" +
             "        if (SBE_BOUNDS_CHECK_EXPECT((offset > (bufsz - %2$s)), 0))\n" +
-            "            throw std::runtime_error(\"buffer too short for flyweight [E107]\");\n" +
+            "            "+runtimeError("buffer too short for flyweight [E107]")+";\n" +
             "    }\n\n" +
             "    %1$s& Wrap(char* buffer, int offset, int vsn, int bufsz) {\n" +
             "        new (this) %1$s(buffer, offset, vsn, bufsz);\n" +
@@ -1779,7 +1797,7 @@ public class Cpp11Generator implements CodeGenerator
             "        m_version       = vsn;\n" +
             "        int pos         = offset+m_block_len;\n" +
             "        if (SBE_BOUNDS_CHECK_EXPECT((pos > long(m_buf_size)), 0))\n" +
-            "            throw std::runtime_error(\"buffer too short [E100]\");\n" +
+            "            "+runtimeError("buffer too short [E100]")+";\n" +
             "        m_position      = pos;\n" +
             "        m_pos_ptr       = &m_position;\n" +
             "        return *this;\n" +
@@ -1787,7 +1805,7 @@ public class Cpp11Generator implements CodeGenerator
             "    uint64_t    Position() const { return m_position; }\n" +
             "    void Position(uint64_t position) {\n" +
             "        if (SBE_BOUNDS_CHECK_EXPECT((position > m_buf_size), 0))\n" +
-            "            throw std::runtime_error(\"buffer too short [E100]\");\n" +
+            "            "+runtimeError("buffer too short [E100]")+";\n" +
             "        m_position = position;\n" +
             "    }\n\n" +
             "    int         Size()     const { return Position() - m_offset; }\n" +
