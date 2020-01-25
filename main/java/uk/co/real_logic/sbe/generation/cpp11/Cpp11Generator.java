@@ -1494,7 +1494,10 @@ public class Cpp11Generator implements CodeGenerator
         final String cpp11NonArrayType = cpp11TypeName(token.encoding().primitiveType(), false);
         sb.append(String.format(
             indent + "    bool   %2$s_is_null() const { return " +
-            (((token.encoding().primitiveType()==PrimitiveType.CHAR && token.arrayLength() > 1) ||
+            (((token.encoding().primitiveType()==PrimitiveType.CHAR &&
+               ((token.arrayLength() > 1) ||
+                (token.encoding().constValue() != null &&
+                 token.encoding().constValue().isByteArray()))) ||
               (token.encoding().primitiveType()==PrimitiveType.INT8 && token.arrayLength() > 1)) ? "%2$s()[0]" : "%2$s()") +
             " == %2$s_null(); }\n" +
             indent + "    static %1$s %2$s_null()     { return %3$s; }\n",
@@ -1712,14 +1715,14 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            indent + "    %1$s %2$s(int idx) const { return %2$s[idx]; }\n\n",
+            indent + "    %1$s %2$s(int idx) const { return %2$s()[idx]; }\n\n",
             cpp11TypeName,
             propName
         ));
 
         sb.append(String.format(
             indent + "    int %1$s(char* dst, int len) const {\n" +
-            indent + "        int bytes = (len < %1$s_len()) ? len : s_%1$s_len();\n" +
+            indent + "        int bytes = (len < %1$s_len()) ? len : %1$s_len();\n" +
             indent + "        ::memcpy(dst, %1$s(), bytes);\n" +
             indent + "        return bytes;\n" +
             indent + "    }\n",
