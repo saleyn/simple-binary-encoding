@@ -305,6 +305,20 @@ public class PrimitiveValue
     }
 
     /**
+     * The representation of this type.
+     *
+     * @return the representation type.
+     */
+    public Representation representation() { return representation; }
+
+    /**
+     * Is this byte array representation.
+     *
+     * @return true when the representation is byte array.
+     */
+    public Boolean isByteArray() { return representation == Representation.BYTE_ARRAY; }
+
+    /**
      * Return String representation of this object
      *
      * @return String representing object value

@@ -33,7 +33,6 @@ import java.util.LinkedList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Collections;
-import java.util.stream.Collectors;
 
 import static uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.*;
 import uk.co.real_logic.sbe.generation.cpp11.Cpp11Util.NodeList;
@@ -718,7 +717,12 @@ public class Cpp11Generator implements CodeGenerator
                 hasTransactTime ? "true" : "false"
             ));
         }
+        return generateStreamPrint2(sb, isGroup, name, fields, indent);
+    }
 
+    private CharSequence generateStreamPrint2(StringBuilder sb, boolean isGroup, final String name,
+                                              final NodeList fields, final String indent)
+    {
         sb.append(String.format(
             indent + "    std::string InfoTag(int tag, int offset) const {\n" +
             indent + "        std::stringstream s;\n" +
@@ -758,7 +762,7 @@ public class Cpp11Generator implements CodeGenerator
                 sb.append(String.format(
                     indent + "        for(auto& g = %1$s(); g.HasNext();) {\n" +
                     indent + "            auto& grp = g.Next();\n" +
-                    indent + "            if (!visitor(std::make_tuple(VisitItem::Grp, VisitInfo::Detail, &grp))) return false;\n" +
+                    indent + "            if (!visitor(std::make_tuple(VisitItem::Grp,VisitInfo::Detail,&grp))) return false;\n"+
                     indent + "            printed = true;\n" +
                     indent + "        }\n" +
                     indent + "        if (printed) return true;\n",
@@ -802,6 +806,12 @@ public class Cpp11Generator implements CodeGenerator
             indent + "    }\n"
         ));
 
+        return generateStreamPrint3(sb, hasGroups, isGroup, name, fields, indent);
+    }
+
+    private CharSequence generateStreamPrint3(StringBuilder sb, boolean hasGroups, boolean isGroup, final String name,
+                                              final NodeList fields, final String indent)
+    {
         if (hasGroups)
         {
             sb.append(String.format(
@@ -868,7 +878,8 @@ public class Cpp11Generator implements CodeGenerator
     {
         final String type = cpp11TypeName(token);
 
-        switch (token.encoding().primitiveType()) {
+        switch (token.encoding().primitiveType())
+        {
             case CHAR:    return isArray(token) ? "const char*" : "char";
             case UINT8:
             case UINT16:
@@ -1573,7 +1584,7 @@ public class Cpp11Generator implements CodeGenerator
             String.format(
                 "\n" +
                 indent + "    static const int %1$s_len() { return %2$d; }\n",
-                uncamelName(propertyName),
+                propName,
                 token.arrayLength()
             )
         );
@@ -1591,17 +1602,18 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             indent + "    %1$s %2$s(int idx) const {\n" +
             indent + "        if (idx < 0 || idx >= %3$d)\n" +
-            indent + "            %2$s;\n\n" +
+            indent + "            %8$s;\n\n" +
                              "%4$s" +
             indent + "        return %5$s(*((%1$s*)(m_buf + m_offset + %6$d + (idx * %7$d))));\n" +
             indent + "    }\n\n",
             cpp11NonArrayType,
-            runtimeError("index out of range for "+uncamelName(propertyName)+" [E104]"),
+            propName,
             token.arrayLength(),
             generateFieldNotPresentCondition(token, indent, true),
             formatByteOrderEncoding(token.encoding().byteOrder(), token.encoding().primitiveType()),
             offset,
-            token.encoding().primitiveType().size()
+            token.encoding().primitiveType().size(),
+            runtimeError("index out of range for "+propName+" [E104]")
         ));
 
         sb.append(String.format(
@@ -1641,7 +1653,7 @@ public class Cpp11Generator implements CodeGenerator
             indent + "        return *this;\n" +
             indent + "    }\n",
             containingClassName,
-            uncamelName(propertyName),
+            propName,
             offset,
             token.arrayLength()
         ));
@@ -1652,14 +1664,16 @@ public class Cpp11Generator implements CodeGenerator
     private CharSequence generateConstPropertyMethods(final String propertyName, final Token token, final String indent)
     {
         final String cpp11TypeName = cpp11TypeName(token);
+        final String propName      = uncamelName(propertyName);
 
-        if (token.encoding().primitiveType() != PrimitiveType.CHAR || token.arrayLength() < 2)
+        if (token.encoding().primitiveType() != PrimitiveType.CHAR ||
+            (!token.encoding().constValue().isByteArray() && token.arrayLength() < 2))
         {
             return String.format(
                 "\n" +
                 indent + "    %1$s %2$s() const { return %3$s; }\n\n",
                 cpp11TypeName,
-                uncamelName(propertyName),
+                propName,
                 generateLiteral(token, token.encoding().constValue().toString(), true)
             );
         }
@@ -1668,9 +1682,11 @@ public class Cpp11Generator implements CodeGenerator
 
         final byte[] constantValue = token.encoding().constValue().byteArrayValue(token.encoding().primitiveType());
         final StringBuilder values = new StringBuilder();
+        Boolean           isString = true;
         for (final byte b : constantValue)
         {
             values.append(b).append(", ");
+            isString &= b >= (byte)' ' && b <= (byte)'~';
         }
         if (values.length() > 0)
         {
@@ -1680,39 +1696,34 @@ public class Cpp11Generator implements CodeGenerator
         sb.append(String.format(
             "\n" +
             indent + "    static const int %1$s_len() { return %2$d; }\n\n",
-            uncamelName(propertyName),
+            propName,
             constantValue.length
         ));
 
         sb.append(String.format(
             indent + "    const char* %1$s() const {\n" +
-            indent + "        static const uint8_t s_%1$s_vals[] = {%2$s, '\\0'};\n\n" +
-            indent + "        return (const char*)s_%1$s_vals;\n" +
+            indent + "        static const char* s_%1$s_vals = %3$c%2$s%4$s;\n\n" +
+            indent + "        return s_%1$s_vals;\n" +
             indent + "    }\n\n",
-            uncamelName(propertyName),
-            values
+            propName,
+            isString ? token.encoding().constValue().toString() : values,
+            isString ? '"'  : '{', 
+            isString ? "\"" : ", '\\0'}"
         ));
 
         sb.append(String.format(
-            indent + "    %1$s %2$s(int idx) const {\n" +
-            indent + "        static const uint8_t s_%2$s_vals[] = {%3$s, '\\0'};\n\n" +
-            indent + "        return s_%2$s_vals[idx];\n" +
-            indent + "    }\n\n",
+            indent + "    %1$s %2$s(int idx) const { return %2$s[idx]; }\n\n",
             cpp11TypeName,
-            uncamelName(propertyName),
-            values
+            propName
         ));
 
         sb.append(String.format(
             indent + "    int %1$s(char* dst, int len) const {\n" +
-            indent + "        static const uint8_t s_%2$s_vals[] = {%3$s, '\\0'};\n" +
-            indent + "        static const int     s_size = sizeof(s_%2$s_vals)-1;\n" +
-            indent + "        int bytes = (len <   s_size) ? len : s_size;\n\n" +
-            indent + "        ::memcpy(dst, s_%2$s_vals, bytes);\n" +
+            indent + "        int bytes = (len < %1$s_len()) ? len : s_%1$s_len();\n" +
+            indent + "        ::memcpy(dst, %1$s(), bytes);\n" +
             indent + "        return bytes;\n" +
             indent + "    }\n",
-            uncamelName(propertyName),
-            uncamelName(propertyName),
+            propName,
             values
         ));
 
@@ -1900,7 +1911,8 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             "\n" +
-            indent + "    static const char* %1$s_meta(MetaAttribute a) { return MetaAttrStr(a, \"%2$s\", \"%3$s\", \"%4$s\"); }\n",
+            indent + "    static const char* %1$s_meta(MetaAttribute a) { " +
+                            " return MetaAttrStr(a, \"%2$s\", \"%3$s\", \"%4$s\"); }\n",
             uncamelName(token.name()),
             epoch,
             timeUnit,
@@ -2053,7 +2065,8 @@ public class Cpp11Generator implements CodeGenerator
                     return "std::numeric_limits<uint64_t>::max()";
             }
         }
-        return generateLiteral(token.encoding().primitiveType(), token.encoding().applicableNullValue().toString(), isArray, isConst);
+        return generateLiteral(token.encoding().primitiveType(),
+                               token.encoding().applicableNullValue().toString(), isArray, isConst);
     }
 
     private boolean isArray(final Token token)
