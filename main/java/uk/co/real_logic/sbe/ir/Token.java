@@ -94,6 +94,7 @@ public class Token
 
     private final Signal signal;
     private final String name;
+    private final String description;
     private final int id;
     private final int version;
     private final int size;
@@ -103,17 +104,19 @@ public class Token
     /**
      * Construct an {@link Token} by providing values for all fields.
      *
-     * @param signal   for the token role
-     * @param name     of the token in the message
-     * @param id       as the identifier in the message declaration
-     * @param version  application within the template
-     * @param size     of the component part
-     * @param offset   in the underlying message as octets
-     * @param encoding of the primitive field
+     * @param signal      for the token role
+     * @param name        of the token in the message
+     * @param description of the token in the message
+     * @param id          as the identifier in the message declaration
+     * @param version     application within the template
+     * @param size        of the component part
+     * @param offset      in the underlying message as octets
+     * @param encoding    of the primitive field
      */
     public Token(
         final Signal signal,
         final String name,
+        final String description,
         final int id,
         final int version,
         final int size,
@@ -126,6 +129,7 @@ public class Token
 
         this.signal = signal;
         this.name = name;
+        this.description = description;
         this.id = id;
         this.version = version;
         this.size = size;
@@ -151,6 +155,16 @@ public class Token
     public String name()
     {
         return name;
+    }
+
+    /**
+     * Return the description of the token
+     *
+     * @return description of the token
+     */
+    public String description()
+    {
+        return description;
     }
 
     /**
@@ -256,6 +270,7 @@ public class Token
     {
         private Signal signal;
         private String name;
+        private String description;
         private int id = INVALID_ID;
         private int version = 0;
         private int size = 0;
@@ -271,6 +286,12 @@ public class Token
         public Builder name(final String name)
         {
             this.name = name;
+            return this;
+        }
+
+        public Builder description(final String descr)
+        {
+            this.description = descr;
             return this;
         }
 
@@ -306,7 +327,7 @@ public class Token
 
         public Token build()
         {
-            return new Token(signal, name, id, version, size, offset, encoding);
+            return new Token(signal, name, description, id, version, size, offset, encoding);
         }
     }
 }

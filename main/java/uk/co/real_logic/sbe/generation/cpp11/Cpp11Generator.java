@@ -53,7 +53,9 @@ public class Cpp11Generator implements CodeGenerator
     private final String        outerNamespace;
     private final String        copyright;
     private final String        outputSubdir;
-    private final boolean       with_utxx;
+    private final boolean       useDescrForClassName;
+    private final boolean       withMsgHeaderStub;
+    private final boolean       withUtxx;
 
     public Cpp11Generator(final Ir ir, final String subdir, final OutputManager outputManager)
         throws IOException
@@ -62,12 +64,16 @@ public class Cpp11Generator implements CodeGenerator
         Verify.notNull(outputManager, "outputManager");
 
         this.ir = ir;
-        this.outputManager  = outputManager;
-        this.outputSubdir   = subdir;
-        this.outerNamespace = System.getProperty("sbe.target.namespace0");
-        this.copyright      = System.getProperty("sbe.target.copyright");
-        String val          = System.getProperty("sbe.target.with_utxx"); // Use utxx library
-        this.with_utxx      = val != null && val.equalsIgnoreCase("true");
+        this.outputManager        = outputManager;
+        this.outputSubdir         = subdir;
+        this.outerNamespace       = System.getProperty("sbe.target.namespace0");
+        this.copyright            = System.getProperty("sbe.target.copyright");
+        String val                = System.getProperty("sbe.target.WithUtxx"); // Use utxx library
+        this.withUtxx             = val != null && val.equalsIgnoreCase("true");
+        val                       = System.getProperty("sbe.target.UseDescrClassName"); // Use descr field for class name
+        this.useDescrForClassName = val != null && val.equalsIgnoreCase("true");
+        val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
+        this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
     }
 
     public String uncamelName(final String name)
@@ -104,20 +110,28 @@ public class Cpp11Generator implements CodeGenerator
         }
     }
 
+    private String getClassName(final Token token)
+    {
+        final String name  = token.name();
+        final String descr = token.description();
+        return formatClassName((!this.useDescrForClassName || descr==null ||
+                                name.length() <= descr.length()) ? name : descr);
+    }
+    
     public void generateMessageHeaderStub() throws IOException
     {
         try (final Writer out = outputManager.createOutput(MESSAGE_HEADER_TYPE))
         {
-            final List<Token> tokens = ir.headerStructure().tokens();
-            final String className   = ir.applicableNamespace().replace('.', '_');
-            out.append(generateFileHeader(className, MESSAGE_HEADER_TYPE, null));
+            final List<Token>   tokens = ir.headerStructure().tokens();
+            final String namespaceName = ir.applicableNamespace().replace('.', '_');
+            out.append(generateFileHeader(namespaceName, MESSAGE_HEADER_TYPE, null));
             out.append(generateClassDeclaration(MESSAGE_HEADER_TYPE));
             out.append(generateFixedFlyweightCode(MESSAGE_HEADER_TYPE, tokens.get(0).size()));
             out.append(
                 generatePrimitivePropertyEncodings(MESSAGE_HEADER_TYPE, tokens.subList(1, tokens.size() - 1), BASE_INDENT));
 
             out.append("};\n\n");
-            fileEndIfdef(out, className, true);
+            fileEndIfdef(out, MESSAGE_HEADER_TYPE, true);
         }
     }
 
@@ -162,7 +176,8 @@ public class Cpp11Generator implements CodeGenerator
 
     public void generate() throws IOException
     {
-        generateMessageHeaderStub();
+        if (withMsgHeaderStub)
+            generateMessageHeaderStub();
         final String namespace = ir.applicableNamespace().replace('.', '_');
         final List<String> typesToInclude = generateTypeStubs();
         typesToInclude.add("<iomanip>");
@@ -174,7 +189,7 @@ public class Cpp11Generator implements CodeGenerator
         for (final List<Token> tokens : ir.messages())
         {
             final Token msgToken = tokens.get(0);
-            final String className = formatClassName(msgToken.name());
+            final String className = getClassName(msgToken);
 
             messages.add(className);
 
@@ -606,26 +621,30 @@ public class Cpp11Generator implements CodeGenerator
 
     private void generateComposite(final List<Token> tokens) throws IOException
     {
-        final String compositeName = formatClassName(tokens.get(0).name());
+        final Token  token        = tokens.get(0);
+        final String name         = token.name();
+        final String descr        = token.description();
+        final String className    = formatClassName((!this.useDescrForClassName || descr==null ||
+                                                     name.length() <= descr.length()) ? name : descr);
 
-        try (final Writer out = outputManager.createOutput(compositeName))
+        try (final Writer out = outputManager.createOutput(className))
         {
-            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), compositeName, null));
-            out.append(generateClassDeclaration(compositeName));
-            out.append(generateFixedFlyweightCode(compositeName, tokens.get(0).size()));
+            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), className, null));
+            out.append(generateClassDeclaration(className));
+            out.append(generateFixedFlyweightCode(className, token.size()));
 
             final List<Token> fieldTokens = tokens.subList(1, tokens.size() - 1);
             out.append(generatePrimitivePropertyEncodings(
-                           compositeName, fieldTokens, BASE_INDENT
+                           className, fieldTokens, BASE_INDENT
                        ));
 
             NodeList fields = fieldTokens.stream()
                                          .collect(NodeList::new, NodeList::add, NodeList::addAll);
-            out.append(generateCompositePrint(compositeName, fields, BASE_INDENT));
+            out.append(generateCompositePrint(className, fields, BASE_INDENT));
 
             out.append("};\n\n");
 
-            fileEndIfdef(out, compositeName, true);
+            fileEndIfdef(out, className, true);
         }
     }
 
@@ -1289,7 +1308,7 @@ public class Cpp11Generator implements CodeGenerator
                 "#include <type_traits>\n" +
                 "#include <ostream>\n");
 
-            out.append(with_utxx ? "#include <utxx/error.hpp>\n\n" : "\n");
+            out.append(withUtxx ? "#include <utxx/error.hpp>\n\n" : "\n");
 
             out.append(String.format(
                 (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
@@ -1326,6 +1345,8 @@ public class Cpp11Generator implements CodeGenerator
         final StringBuilder sb = new StringBuilder();
 
         sb.append("// vim:ts=4:sw=4:et\n");
+        sb.append("//------------------------------------------------------------------------------\n");
+        sb.append("// File: " + className + ".hpp\n");
         sb.append("//------------------------------------------------------------------------------\n");
         sb.append("// Generated SBE (Simple Binary Encoding) message codec\n");
         sb.append("//------------------------------------------------------------------------------\n");
@@ -1568,8 +1589,8 @@ public class Cpp11Generator implements CodeGenerator
     private String runtimeError(final String val)
     {
         return String.format("%1$s(\"%2$s\")",
-                             with_utxx ? "UTXX_THROW_RUNTIME_ERROR"
-                                       : "throw std::runtime_error",
+                             withUtxx ? "UTXX_THROW_RUNTIME_ERROR"
+                                      : "throw std::runtime_error",
                              val);
     }
 
@@ -1651,14 +1672,37 @@ public class Cpp11Generator implements CodeGenerator
         ));
 
         sb.append(String.format(
-            indent + "    %1$s& %2$s(const char* src) {\n" +
-            indent + "        ::memcpy(m_buf + m_offset + %3$d, src, %4$d);\n" +
+            indent + "    %1$s& %2$s(const char* src, int len) {\n" +
+            indent + "        if (len > %4$d)\n" +
+            indent + "             %5$s;\n\n" +
+            indent + "        int  n = std::min(%4$d, len);\n" +
+            indent + "        auto p = m_buf + m_offset + %3$d\n" +
+            indent + "        auto e = p + %4$d\n" +
+            indent + "        ::memcpy(p, src, n);\n" +
+            indent + "        for (p += n; p != e; ++p) *p = '\\0';\n" +
             indent + "        return *this;\n" +
-            indent + "    }\n",
+            indent + "    }\n\n",
             containingClassName,
             propName,
             offset,
-            token.arrayLength()
+            token.arrayLength(),
+            runtimeError("length too large for get "+propName+" [E107]")
+        ));
+
+        sb.append(String.format(
+            indent + "    %1$s& %2$s(const std::string& src) {\n" +
+            indent + "        return %2$s(src.c_str(), src.size());\n" +
+            indent + "    }\n\n",
+            containingClassName,
+            propName
+        ));
+
+        sb.append(String.format(
+            indent + "    %1$s& %2$s(const char* src) {\n" +
+            indent + "        return %2$s(src, strlen(src));\n" +
+            indent + "    }\n",
+            containingClassName,
+            propName
         ));
 
         return sb;
