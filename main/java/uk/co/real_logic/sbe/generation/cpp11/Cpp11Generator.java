@@ -54,6 +54,7 @@ public class Cpp11Generator implements CodeGenerator
     private final String        copyright;
     private final String        outputSubdir;
     private final boolean       useDescrForClassName;
+    private final String        genPossDupMethod;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
 
@@ -74,6 +75,7 @@ public class Cpp11Generator implements CodeGenerator
         this.useDescrForClassName = val != null && val.equalsIgnoreCase("true");
         val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
         this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
+        this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
     }
 
     public String uncamelName(final String name)
@@ -206,6 +208,18 @@ public class Cpp11Generator implements CodeGenerator
                 final NodeList fields = new NodeList();
 
                 offset = collectRootFields(messageBody, offset, rootFields);
+
+                if (this.genPossDupMethod != null) {
+                    boolean found = false;
+                    for (final Token t : rootFields)
+                        if (t.name().equals(this.genPossDupMethod)) {
+                            found = true;
+                            break;
+                        }
+                    out.append("    bool        PossDupFlag() const { return " +
+                               (found ? uncamelName(this.genPossDupMethod) + "()" : "false") +
+                               "; }\n");
+                }
                 out.append(generateFields(className, rootFields, BASE_INDENT, fields));
 
                 final List<Token> groups = new ArrayList<>();
@@ -214,9 +228,27 @@ public class Cpp11Generator implements CodeGenerator
                 generateGroups(sb, groups, 0, BASE_INDENT, fields);
                 out.append(sb);
 
-                final List<Token> varData = messageBody.subList(offset, messageBody.size());
-                out.append(generateVarData(varData, fields));
+                final List<Token>  varData       = messageBody.subList(offset, messageBody.size());
+                final List<String> varLenMembers = new ArrayList<String>();
+                final CharSequence varDataStr    = generateVarData(varData, fields, varLenMembers);
 
+                out.append("\n    int VarDataLen() const {");
+                if (varLenMembers.size() == 0)
+                    out.append(" return 0; }\n\n");
+                else {
+                    StringBuilder ss = new StringBuilder();
+                    out.append("\n        return ");
+                    for (int i=0, size=varLenMembers.size(); i < size; i++) {
+                        out.append(varLenMembers.get(i))
+                           .append("_header_size() + ")
+                           .append(varLenMembers.get(i))
+                           .append("_len()");
+                        out.append((i == size-1) ? ";\n" : " +\n             ");
+                    }
+                    out.append("    }\n");
+                }
+
+                out.append(varDataStr);
                 out.append(generateStreamPrint(false, className, fields, BASE_INDENT));
 
                 out.append(String.format("}; // %s\n", className));
@@ -442,7 +474,7 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateVarData(final List<Token> tokens, final NodeList fields)
+    private CharSequence generateVarData(final List<Token> tokens, final NodeList fields, final List<String> varDataMembers)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -456,8 +488,9 @@ public class Cpp11Generator implements CodeGenerator
                 final Token        lengthToken = tokens.get(i + 2);
                 final int             lenFldSz = lengthToken.size();
                 final String   lengthCpp11Type = cpp11TypeName(lengthToken);
-
+                final String          propName = uncamelName(formatPropertyName(propertyName));
                 fields.add(propertyName, token);
+                varDataMembers.add(propName);
 
                 generateFieldMetaAttributeMethod(sb, token, BASE_INDENT);
 
@@ -471,7 +504,7 @@ public class Cpp11Generator implements CodeGenerator
                     "         Position(Position() + %3$d + *((%4$s *)(m_buf + Position())));\n" +
                     "         return p;\n" +
                     "    }\n\n",
-                    uncamelName(formatPropertyName(propertyName)),
+                    propName,
                     generateTypeFieldNotPresentCondition(token.version(), BASE_INDENT),
                     lenFldSz,
                     lengthCpp11Type
@@ -490,7 +523,7 @@ public class Cpp11Generator implements CodeGenerator
                     "        ::memcpy(dst,  m_buf + pos, bytesToCopy);\n" +
                     "        return bytesToCopy;\n" +
                     "    }\n\n",
-                    uncamelName(propertyName),
+                    propName,
                     generateArrayFieldNotPresentCondition(token.version(), BASE_INDENT),
                     lenFldSz,
                     formatByteOrderEncoding(lengthToken.encoding().byteOrder(), lengthToken.encoding().primitiveType()),
@@ -508,7 +541,7 @@ public class Cpp11Generator implements CodeGenerator
                     "        ::memcpy(m_buf + pos, src, len);\n" +
                     "        return len;\n" +
                     "    }\n",
-                    uncamelName(propertyName),
+                    propName,
                     lenFldSz,
                     lengthCpp11Type,
                     formatByteOrderEncoding(lengthToken.encoding().byteOrder(), lengthToken.encoding().primitiveType())
