@@ -1810,6 +1810,7 @@ public class Cpp11Generator implements CodeGenerator
         final String schemaIdType = cpp11TypeName(ir.headerStructure().schemaIdType(), false);
         final String schemaVersionType = cpp11TypeName(ir.headerStructure().schemaVersionType(), false);
         final String semanticType = token.encoding().semanticType() == null ? "" : token.encoding().semanticType();
+        final String msgTypeName  = token.name();
 
         return String.format(
             "private:\n" +
@@ -1833,6 +1834,7 @@ public class Cpp11Generator implements CodeGenerator
             "    static constexpr %5$s SchemaID()            { return %6$s; }\n" +
             "    static constexpr %7$s SchemaVersion()       { return %8$s; }\n" +
             "    static constexpr const char* SemanticType() { return \"%9$s\"; }\n" +
+            "    static constexpr const char* MsgTypeName()  { return \"%11$s\"; }\n" +
             "    static constexpr const char* Name()         { return \"%10$s\"; }\n" +
             "    uint64_t                     Offset() const { return m_offset; }\n\n" +
             "    %10$s&\n" +
@@ -1881,7 +1883,8 @@ public class Cpp11Generator implements CodeGenerator
             schemaVersionType,
             generateLiteral(ir.headerStructure().schemaVersionType(), Integer.toString(token.version()), false, false),
             semanticType,
-            className
+            className,
+            msgTypeName
         );
     }
 
