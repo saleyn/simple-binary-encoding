@@ -55,6 +55,7 @@ public class Cpp11Generator implements CodeGenerator
     private final String        outputSubdir;
     private final boolean       useDescrForClassName;
     private final String        genPossDupMethod;
+    private final String        genSeqnoMethod;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
 
@@ -76,6 +77,7 @@ public class Cpp11Generator implements CodeGenerator
         val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
         this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
         this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
+        this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "Seqno" method
     }
 
     public String uncamelName(final String name)
@@ -216,10 +218,27 @@ public class Cpp11Generator implements CodeGenerator
                             found = true;
                             break;
                         }
-                    out.append("    bool        PossDupFlag() const { return " +
-                               (found ? uncamelName(this.genPossDupMethod) + "()" : "false") +
-                               "; }\n");
+                    out.append("    bool        PossDupFlag()   const { return ")
+                       .append(found ? uncamelName(this.genPossDupMethod) + "()" : "false")
+                       .append("; }\n");
                 }
+
+                if (this.genSeqnoMethod != null) {
+                    boolean found = false;
+                    for (final Token t : rootFields)
+                        if (t.name().equals(this.genSeqnoMethod)) {
+                            found = true;
+                            break;
+                        }
+                    out.append("    unsigned    Seqno()         const { return unsigned(")
+                       .append(found ? uncamelName(this.genSeqnoMethod) + "()" : "0")
+                       .append("); }\n\n")
+                       .append("    static constexpr bool       HAS_SEQNO = ")
+                       .append(found ? "true" : "false")
+                       .append(";\n")
+                       ;
+                }
+
                 out.append(generateFields(className, rootFields, BASE_INDENT, fields));
 
                 final List<Token> groups = new ArrayList<>();
@@ -1895,18 +1914,18 @@ public class Cpp11Generator implements CodeGenerator
             "        m_pos_ptr       = &m_position;\n" +
             "        return *this;\n" +
             "    }\n\n" +
-            "    uint64_t    Position() const { return m_position; }\n" +
-            "    void Position(uint64_t position) {\n" +
+            "    uint64_t    Position()      const { return m_position; }\n" +
+            "    void Position(uint64_t position)  {\n" +
             "        if (SBE_BOUNDS_CHECK_EXPECT((position > m_buf_size), 0))\n" +
             "            "+runtimeError("buffer too short [E100]")+";\n" +
             "        m_position = position;\n" +
             "    }\n\n" +
-            "    int         Size()     const { return Position() - m_offset; }\n" +
-            "    char*       Buffer()         { return m_buf; }\n" +
-            "    const char* Buffer()   const { return m_buf; }\n" +
-            "    size_t      BufSize()  const { return m_buf_size; }\n" +
-            "    int         Version()  const { return m_version; }\n" +
-            "    void        Rewind()         { Position(m_offset + m_block_len); }\n",
+            "    int         Size()          const { return Position() - m_offset; }\n" +
+            "    char*       Buffer()              { return m_buf; }\n" +
+            "    const char* Buffer()        const { return m_buf; }\n" +
+            "    size_t      BufSize()       const { return m_buf_size; }\n" +
+            "    int         Version()       const { return m_version; }\n" +
+            "    void        Rewind()              { Position(m_offset + m_block_len); }\n",
             blockLengthType,
             generateLiteral(ir.headerStructure().blockLengthType(), Integer.toString(token.size()), false, false),
             templateIdType,
