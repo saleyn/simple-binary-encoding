@@ -251,7 +251,7 @@ public class Cpp11Generator implements CodeGenerator
                 final List<String> varLenMembers = new ArrayList<String>();
                 final CharSequence varDataStr    = generateVarData(varData, fields, varLenMembers);
 
-                out.append("\n    int VarDataLen() const {");
+                out.append("\n    static int VarHeaderLen() {");
                 if (varLenMembers.size() == 0)
                     out.append(" return 0; }\n\n");
                 else {
@@ -259,10 +259,23 @@ public class Cpp11Generator implements CodeGenerator
                     out.append("\n        return ");
                     for (int i=0, size=varLenMembers.size(); i < size; i++) {
                         out.append(varLenMembers.get(i))
-                           .append("_header_size() + ")
+                           .append("_header_size()");
+                        out.append((i == size-1) ? ";\n" : " +\n             ");
+                    }
+                    out.append("    }\n");
+                }
+
+                out.append("\n    int VarDataLen() const {");
+                if (varLenMembers.size() == 0)
+                    out.append(" return 0; }\n\n");
+                else {
+                    StringBuilder ss = new StringBuilder();
+                    out.append("\n        return VarHeaderLen()");
+                    for (int i=0, size=varLenMembers.size(); i < size; i++) {
+                        out.append("\n             + ")
                            .append(varLenMembers.get(i))
                            .append("_len()");
-                        out.append((i == size-1) ? ";\n" : " +\n             ");
+                        out.append((i == size-1) ? ";\n" : "");
                     }
                     out.append("    }\n");
                 }
@@ -974,7 +987,8 @@ public class Cpp11Generator implements CodeGenerator
             indent + "        return out;\n" +
             indent + "    }\n" +
             indent + "    // Print method for %1$s %2$s\n" +
-            indent + "    friend inline std::ostream& operator<< (std::ostream& out, %1$s& a) {\n" +
+            indent + "    template <typename Stream>
+            indent + "    friend inline Stream& operator<< (Stream& out, %1$s& a) {\n" +
             indent + "        a.PrintFields(out);\n",
             name, isGroup ? "group" : "message"));
 
