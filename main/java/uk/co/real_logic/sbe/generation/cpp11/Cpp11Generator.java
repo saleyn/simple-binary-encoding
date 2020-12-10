@@ -58,7 +58,7 @@ public class Cpp11Generator implements CodeGenerator
     private final boolean       useDescrForClassName;
     private final String        genPossDupMethod;
     private final String        genSeqnoMethod;
-    private final boolean       addHasUUIDConst;
+    private final String        genUUIDMethod;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
 
@@ -86,8 +86,7 @@ public class Cpp11Generator implements CodeGenerator
         this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
         this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
         this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "HAS_SEQNO" method
-        val                       = System.getProperty("sbe.target.AddHasUUIDConst");   // Add "HAS_UUID" const
-        this.addHasUUIDConst      = val != null && val.equalsIgnoreCase("true");
+        this.genUUIDMethod        = System.getProperty("sbe.target.GenUUIDMethod");     // Add "HAS_UUID" const and method
     }
 
     public String uncamelName(final String name)
@@ -248,7 +247,7 @@ public class Cpp11Generator implements CodeGenerator
                        .append(";\n");
                 }
 
-                if (this.addHasUUIDConst) {
+                if (this.genUUIDMethod != null) {
                     boolean found = false;
                     for (final Token t : rootFields)
                         if (t.name().equals("UUID")) {
@@ -257,7 +256,11 @@ public class Cpp11Generator implements CodeGenerator
                         }
                     out.append("    static constexpr bool       HAS_UUID  = ")
                        .append(found ? "true" : "false")
-                       .append(";\n");
+                       .append(";\n\n")
+                       .append("    uint64_t    UUID()          const { return uint64_t(")
+                       .append(found ? uncamelName(this.genUUIDMethod) + "()" : "0")
+                       .append("); }\n")
+                       ;
                 }
 
                 out.append(generateFields(className, rootFields, BASE_INDENT, fields));
