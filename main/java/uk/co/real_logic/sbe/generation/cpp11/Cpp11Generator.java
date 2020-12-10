@@ -58,6 +58,7 @@ public class Cpp11Generator implements CodeGenerator
     private final boolean       useDescrForClassName;
     private final String        genPossDupMethod;
     private final String        genSeqnoMethod;
+    private final boolean       addHasUUIDConst;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
 
@@ -84,7 +85,9 @@ public class Cpp11Generator implements CodeGenerator
         val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
         this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
         this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
-        this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "Seqno" method
+        this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "HAS_SEQNO" method
+        val                       = System.getProperty("sbe.target.AddHasUUIDConst");   // Add "HAS_UUID" const
+        this.addHasUUIDConst      = val != null && val.equalsIgnoreCase("true");
     }
 
     public String uncamelName(final String name)
@@ -242,8 +245,19 @@ public class Cpp11Generator implements CodeGenerator
                        .append("); }\n\n")
                        .append("    static constexpr bool       HAS_SEQNO = ")
                        .append(found ? "true" : "false")
-                       .append(";\n")
-                       ;
+                       .append(";\n");
+                }
+
+                if (this.addHasUUIDConst) {
+                    boolean found = false;
+                    for (final Token t : rootFields)
+                        if (t.name().equals("UUID")) {
+                            found = true;
+                            break;
+                        }
+                    out.append("    static constexpr bool       HAS_UUID  = ")
+                       .append(found ? "true" : "false")
+                       .append(";\n");
                 }
 
                 out.append(generateFields(className, rootFields, BASE_INDENT, fields));
