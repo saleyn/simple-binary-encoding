@@ -49,8 +49,9 @@ public class Cpp11Generator implements CodeGenerator
 
     private final Ir ir;
     private final OutputManager outputManager;
-    private String              innerNamespace;
+    private final String        innerNamespace;
     private final String        outerNamespace;
+    private final String        vsnNamespace;
     private final String        copyright;
     private final String        copyrightYear;
     private final String        outputSubdir;
@@ -61,10 +62,14 @@ public class Cpp11Generator implements CodeGenerator
     private final String        genUUIDMethod;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
+    private final boolean       skipEnum255;
+    private final boolean       sbeHppGenerate;
 
     public Cpp11Generator(final Ir ir, final String subdir, final OutputManager outputManager)
         throws IOException
     {
+        this.innerNamespace = ir.applicableNamespace().replace('.', '_');
+
         Verify.notNull(ir, "ir");
         Verify.notNull(outputManager, "outputManager");
 
@@ -74,12 +79,18 @@ public class Cpp11Generator implements CodeGenerator
         this.outputSubdir         = val == null ? subdir : val + '/' + subdir;
         val                       = System.getProperty("sbe.hpp.dirPrefix");
         this.sbeHppDirPrefix      = val == null ? "sbe" : val;
+        val                       = System.getProperty("sbe.generate.sbe.hpp");
+        this.sbeHppGenerate       = val == null || val.equalsIgnoreCase("true");
+        // Note 
         this.outerNamespace       = System.getProperty("sbe.target.namespace0");
+        this.vsnNamespace         = System.getProperty("sbe.target.namespace2");
         this.copyright            = System.getProperty("sbe.target.copyright");
         val                       = System.getProperty("sbe.target.copyrightYear");
         this.copyrightYear        = val == null ? String.valueOf(Calendar.getInstance().get(Calendar.YEAR)) : val;
         val                       = System.getProperty("sbe.target.WithUtxx"); // Use utxx library
         this.withUtxx             = val != null && val.equalsIgnoreCase("true");
+        val                       = System.getProperty("sbe.target.SkipEnum255");       // Don't add enum value 255
+        this.skipEnum255          = val != null && val.equalsIgnoreCase("true");
         val                       = System.getProperty("sbe.target.UseDescrClassName"); // Use descr field for class name
         this.useDescrForClassName = val != null && val.equalsIgnoreCase("true");
         val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
@@ -101,26 +112,24 @@ public class Cpp11Generator implements CodeGenerator
     {
         if (closeNamespaces)
         {
-            this.closeNamespaces(out, innerNamespace);
+            this.closeNamespaces(out, innerNamespace, 3);
         }
-        out.append("\n#endif // ");
-        out.append(ifdefName(name));
-        out.append("\n");
     }
 
-    private void closeNamespaces(final Writer out, final String namespace)
+    private void closeNamespaces(final Writer out, final String namespace, int levels)
         throws IOException
     {
-        out.append("} // namespace ");
-        if (namespace != null)
-        {
-            out.append(namespace + "\n");
-        }
-        if (outerNamespace != null)
-        {
-            out.append("} // namespace ");
-            out.append(outerNamespace + "\n");
-        }
+        if (levels > 0)
+            out.append("\n");
+
+        if (vsnNamespace != null && levels > 2)
+            out.append(String.format("} // namespace %1$s\n", vsnNamespace));
+
+        if (levels > 1)
+            out.append(String.format("} // namespace %1$s\n", namespace==null ? "" : namespace));
+
+        if (outerNamespace != null && levels > 0)
+            out.append(String.format("} // namespace %1$s\n", outerNamespace));
     }
 
     private String getClassName(final Token token)
@@ -136,8 +145,7 @@ public class Cpp11Generator implements CodeGenerator
         try (final Writer out = outputManager.createOutput(MESSAGE_HEADER_TYPE))
         {
             final List<Token>   tokens = ir.headerStructure().tokens();
-            final String namespaceName = ir.applicableNamespace().replace('.', '_');
-            out.append(generateFileHeader(namespaceName, MESSAGE_HEADER_TYPE, null));
+            out.append(generateFileHeader(MESSAGE_HEADER_TYPE, null));
             out.append(generateClassDeclaration(MESSAGE_HEADER_TYPE));
             out.append(generateFixedFlyweightCode(MESSAGE_HEADER_TYPE, tokens.get(0).size()));
             out.append(
@@ -150,12 +158,12 @@ public class Cpp11Generator implements CodeGenerator
 
     static final String MESSAGES_FILE = "Messages";
 
-    private void generateMessagesFile(final String namespace, final List<String> messages)
+    private void generateMessagesFile(final List<String> messages)
         throws IOException
     {
         try (final Writer out = outputManager.createOutput(MESSAGES_FILE))
         {
-            out.append(generateFileHeader(namespace, MESSAGES_FILE, messages, false, false));
+            out.append(generateFileHeader(MESSAGES_FILE, messages, false, false));
             fileEndIfdef(out, MESSAGES_FILE, false);
         }
     }
@@ -191,11 +199,10 @@ public class Cpp11Generator implements CodeGenerator
     {
         if (withMsgHeaderStub)
             generateMessageHeaderStub();
-        final String namespace = ir.applicableNamespace().replace('.', '_');
         final List<String> typesToInclude = generateTypeStubs();
         typesToInclude.add("<iomanip>");
 
-        generateSbeMainInclude(namespace);
+        generateSbeMainInclude();
 
         final List<String> messages = new ArrayList<String>();
 
@@ -208,8 +215,8 @@ public class Cpp11Generator implements CodeGenerator
 
             try (final Writer out = outputManager.createOutput(className))
             {
-                out.append(generateFileHeader(namespace, className, typesToInclude));
-                out.append(generateClassDeclaration(className, msgBaseClassName(namespace)));
+                out.append(generateFileHeader(className, typesToInclude));
+                out.append(generateClassDeclaration(className, msgBaseClassName()));
                 out.append(generateMessageFlyweightCode(className, msgToken));
 
                 final List<Token> messageBody = tokens.subList(1, tokens.size() - 1);
@@ -314,7 +321,7 @@ public class Cpp11Generator implements CodeGenerator
 
         if (!messages.isEmpty())
         {
-            generateMessagesFile(namespace, messages);
+            generateMessagesFile(messages);
         }
     }
 
@@ -717,7 +724,7 @@ public class Cpp11Generator implements CodeGenerator
         try (final Writer out = outputManager.createOutput(bitSetName))
         {
             final List<String> headers = Arrays.asList("<algorithm>", "<vector>");
-            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), bitSetName, headers));
+            out.append(generateFileHeader(bitSetName, headers));
             out.append(generateClassDeclaration(bitSetName));
             out.append(generateFixedFlyweightCode(bitSetName, tokens.get(0).size()));
 
@@ -748,15 +755,8 @@ public class Cpp11Generator implements CodeGenerator
 
         try (final Writer out = outputManager.createOutput(enumName))
         {
-            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), enumName, null));
+            out.append(generateEnumFileHeader(enumName));
             out.append(generateEnumDeclaration(enumName, enumToken, tokens.subList(1, tokens.size() - 1)));
-
-            out.append(generateEnumLookupMethod(
-                           tokens.subList(1, tokens.size() - 1), enumToken
-                       ));
-            out.append(generateEnumToStringMethod(enumToken, tokens.subList(1, tokens.size() - 1)));
-
-            out.append("};\n");
             fileEndIfdef(out, enumName, true);
         }
     }
@@ -771,7 +771,7 @@ public class Cpp11Generator implements CodeGenerator
 
         try (final Writer out = outputManager.createOutput(className))
         {
-            out.append(generateFileHeader(ir.applicableNamespace().replace('.', '_'), className, null));
+            out.append(generateFileHeader(className, null));
             out.append(generateClassDeclaration(className));
             out.append(generateFixedFlyweightCode(className, token.size()));
 
@@ -1223,7 +1223,7 @@ public class Cpp11Generator implements CodeGenerator
         return sb;
     }
 
-    private CharSequence generateEnumValues(final List<Token> tokens, final Token encodingToken)
+    private CharSequence generateEnumValues(final String name, final List<Token> tokens, final Token encodingToken)
     {
         final StringBuilder  sb = new StringBuilder();
         final Encoding encoding = encodingToken.encoding();
@@ -1236,27 +1236,58 @@ public class Cpp11Generator implements CodeGenerator
             )
         );
 
-        sb.append("    enum Value {\n");
-
-        for (final Token token : tokens)
+        if (this.withUtxx)
         {
-            final CharSequence constVal = generateLiteral(token, token.encoding().constValue().toString(), false);
-            sb.append(
-                String.format(
-                    "        %-" + maxWid + "s = %s,\n",
-                    token.name(),
-                    constVal
+            sb.append(String.format(
+                "UTXX_ENUMU\n(%1$s, (%3$s, %2$s, %4$s, %4$s+1, false),\n",
+                name,
+                nullVal,
+                cpp11TypeName(encodingToken.encoding().primitiveType(), isArray(encodingToken), false),
+                generateLiteral(encodingToken, encoding.applicableNullValue().toString(), false)
             ));
+
+            for (final Token token : tokens)
+            {
+                final String       val      = token.encoding().constValue().toString();
+                final CharSequence constVal = generateLiteral(token, val, false);
+                if (val.equals("255") && this.skipEnum255)
+                    continue;
+                sb.append(
+                    String.format(
+                        "    (%-" + maxWid + "s, %s)\n",
+                        token.name(),
+                        constVal
+                ));
+            }
+            sb.append(");\n");
         }
+        else
+        {
+            sb.append("    enum Value {\n");
 
-        sb.append(String.format(
-            "        %1$-" + maxWid + "s = %2$s",
-            nullVal,
-            generateLiteral(encodingToken, encoding.applicableNullValue().toString(), false)
-        ));
+            for (final Token token : tokens)
+            {
+                final String       val      = token.encoding().constValue().toString();
+                final CharSequence constVal = generateLiteral(token, val, false);
+                if (val.equals("255") && this.skipEnum255)
+                    continue;
+                    
+                sb.append(
+                    String.format(
+                        "        %-" + maxWid + "s = %s,\n",
+                        token.name(),
+                        constVal
+                ));
+            }
 
-        sb.append("\n    };\n");
+            sb.append(String.format(
+                "        %1$-" + maxWid + "s = %2$s",
+                nullVal,
+                generateLiteral(encodingToken, encoding.applicableNullValue().toString(), false)
+            ));
 
+            sb.append("\n    };\n");
+        }
         return sb;
     }
 
@@ -1297,6 +1328,10 @@ public class Cpp11Generator implements CodeGenerator
 
         for (final Token token : tokens)
         {
+            final String val = token.encoding().constValue().toString();
+            if (val.equals("255") && this.skipEnum255)
+                continue;
+
             sb.append(
                 String.format(
                     "            case %1$-" + maxWid + "s: return \"%1$s\";\n",
@@ -1341,6 +1376,9 @@ public class Cpp11Generator implements CodeGenerator
         for (final Token token : tokens)
         {
             final String sval = token.encoding().constValue().toString();
+            if (sval.equals("255") && this.skipEnum255)
+                continue;
+
             sb.append(String.format(
                 "            case %1$-" + maxWid + "s: return %2$s;\n",
                 sval,
@@ -1421,23 +1459,20 @@ public class Cpp11Generator implements CodeGenerator
         return sb.toString();
     }
 
-    private CharSequence generateFileHeader(final String namespaceName, final String className,
-        final List<String> typesToInclude)
+    private String msgBaseClassName()
     {
-        return generateFileHeader(namespaceName, className, typesToInclude, true, true);
+        return String.format("%sBase", innerNamespace.toUpperCase());
     }
 
-    private String msgBaseClassName(final String namespace)
+    private void generateSbeMainInclude() throws IOException
     {
-        return String.format("%sBase", namespace.toUpperCase());
-    }
+        if (!this.sbeHppGenerate)
+            return;
 
-    private void generateSbeMainInclude(final String namespace) throws IOException
-    {
         final String fileName = "sbe";
         try (final Writer out = outputManager.createOutput(fileName))
         {
-            out.append(generateFileHeader(namespace, fileName, null, false, false));
+            out.append(generateFileHeader(fileName, null, false, false));
 
             out.append(
                 "#if defined(SBE_HAVE_CMATH)\n" +
@@ -1462,11 +1497,13 @@ public class Cpp11Generator implements CodeGenerator
 
             out.append(withUtxx ? "#include <utxx/error.hpp>\n\n" : "\n");
 
+            StringBuilder sb = new StringBuilder();
+            addNamespaces(sb, 1);
+            out.append(sb.toString());
+
             out.append(String.format(
-                (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
-                "namespace %1$s {\n\n" +
                 "    /// Base class for all derived protocol messages\n" +
-                "    class %2$s {};\n\n" +
+                "    class %1$s {};\n\n" +
                 "    using sbe::MetaAttribute;\n\n" +
                 "    inline const char* MetaAttrStr(MetaAttribute a, const char* s1, const char* s2, const char* s3) {\n" +
                 "        const char* vals[] = {s1, s2, s3};\n" +
@@ -1483,18 +1520,34 @@ public class Cpp11Generator implements CodeGenerator
                 "    enum class VisitItem { Msg, Grp };\n\n" +
                 "    enum class VisitInfo { Header, Detail };\n\n" +
                 "    struct NoGroups {};\n\n",
-                namespace,
-                msgBaseClassName(namespace)
+                msgBaseClassName()
             ));
 
-            fileEndIfdef(out, fileName, true);
+            this.closeNamespaces(out, innerNamespace, 1);
         }
     }
 
-    private CharSequence generateFileHeader(final String namespaceName, final String className,
+    private CharSequence generateFileHeader(final String className,
+        final List<String> typesToInclude)
+    {
+        return generateFileHeader(className, typesToInclude, true, true, null);
+    }
+
+    private CharSequence generateEnumFileHeader(final String className)
+    {
+        return generateFileHeader(className, null, false, true, Arrays.asList("utxx/enumu.hpp"));
+    }
+
+    private CharSequence generateFileHeader(final String className,
         final List<String> typesToInclude, boolean incDefines, boolean incNamespace)
     {
-        this.innerNamespace = namespaceName;
+        return generateFileHeader(className, typesToInclude, incDefines, incNamespace, null);
+    }
+
+    private CharSequence generateFileHeader(final String className,
+        final List<String> typesToInclude, boolean incDefines, boolean incNamespace,
+        final List<String> filesToInclude)
+    {
         final StringBuilder sb = new StringBuilder();
 
         sb.append("// vim:ts=4:sw=4:et\n");
@@ -1513,18 +1566,23 @@ public class Cpp11Generator implements CodeGenerator
         sb.append("// FILE IS AUTO-GENERATED FROM SCHEMA - DON'T MODIFY BY HAND!\n");
         sb.append("//------------------------------------------------------------------------------\n");
 
-        sb.append(String.format(
-            "#ifndef %1$s\n" +
-            "#define %1$s\n\n",
-            ifdefName(className)
-        ));
+        sb.append("#pragma once\n\n");
 
         boolean addnl = false;
 
         if (incDefines)
         {
-            sb.append(String.format("#include <%1$s/sbe.hpp>\n", outputSubdir));
+            sb.append(String.format("#include <%1$s/sbe.hpp>\n", this.sbeHppDirPrefix));
             addnl = true;
+        }
+
+        if (filesToInclude != null)
+        {
+            for (final String incName : filesToInclude)
+            {
+                sb.append("#include <" + incName + ">\n");
+                addnl = true;
+            }
         }
 
         if (typesToInclude != null)
@@ -1554,14 +1612,25 @@ public class Cpp11Generator implements CodeGenerator
 
         if (incNamespace)
         {
-            sb.append(String.format(
-                (outerNamespace == null ? "" : ("namespace " + outerNamespace + " {\n")) +
-                "namespace %1$s {\n\n",
-                namespaceName
-            ));
+            addNamespaces(sb, 3);
         }
 
         return sb;
+    }
+
+    private void addNamespaces(StringBuilder sb, int levels)
+    {
+        if (outerNamespace != null && levels > 0)
+            sb.append(String.format("namespace %1$s {\n", outerNamespace));
+
+        if (levels > 1)
+            sb.append(String.format("namespace %1$s {\n", innerNamespace));
+
+        if (this.vsnNamespace != null && levels > 2)
+            sb.append(String.format("namespace %1$s {\n", vsnNamespace));
+
+        if (levels > 0)
+            sb.append("\n");
     }
 
     private CharSequence generateClassDeclaration(final String className)
@@ -1580,33 +1649,35 @@ public class Cpp11Generator implements CodeGenerator
 
     private CharSequence generateEnumDeclaration(final String name, final Token token, final List<Token> tokens)
     {
-        final CharSequence values = generateEnumValues(tokens, token);
-        return String.format(
-            "struct %1$s {\n" +
-            "%3$s\n" +
-            "private:\n" +
-            "    Value  m_val;\n" +
-            "public:\n" +
-            "    static constexpr size_t s_size = 1+%2$d;\n\n" +
-            "    explicit %1$s(int    v) : m_val(Value(v))   {}\n" +    // TODO: Add assert() ???
-            "    explicit %1$s(size_t v) : m_val(Value(v))   {}\n" +
-            "    %1$s()                  : m_val(NULL_VALUE) {}\n" +
-            "    constexpr %1$s(Value v) : m_val(v) {}\n\n"  +
-            "    operator Value() const { return m_val; }\n" +
-            "    bool     Empty() const { return m_val == NULL_VALUE; }\n\n" +
-            "    template <typename Stream>\n" +
-            "    inline friend Stream& operator<< (Stream& out, %1$s a) {\n" +
-            "        if (a == NULL_VALUE) out << \"<null>\";\n" +
-            "        else                 out << a.str() << \" (\" << a.%1$s::c_str() << ')';\n" +
-            "        return out;\n" +
-            "    }\n" +
-            "    std::string to_string() {\n" +
-            "        std::stringstream s; s << *this; return s.str();\n" +
-            "    }\n",
-            name,
-            tokens.size(),
-            values
-        );
+        final CharSequence values = generateEnumValues(name, tokens, token);
+        return this.withUtxx
+            ?  values
+            :  String.format(
+                "struct %1$s {\n" +
+                "%3$s\n" +
+                "private:\n" +
+                "    Value  m_val;\n" +
+                "public:\n" +
+                "    static constexpr size_t s_size = 1+%2$d;\n\n" +
+                "    explicit %1$s(int    v) : m_val(Value(v))   {}\n" +    // TODO: Add assert() ???
+                "    explicit %1$s(size_t v) : m_val(Value(v))   {}\n" +
+                "    %1$s()                  : m_val(NULL_VALUE) {}\n" +
+                "    constexpr %1$s(Value v) : m_val(v) {}\n\n"  +
+                "    operator Value() const { return m_val; }\n" +
+                "    bool     Empty() const { return m_val == NULL_VALUE; }\n\n" +
+                "    template <typename Stream>\n" +
+                "    inline friend Stream& operator<< (Stream& out, %1$s a) {\n" +
+                "        if (a == NULL_VALUE) out << \"<null>\";\n" +
+                "        else                 out << a.str() << \" (\" << a.%1$s::c_str() << ')';\n" +
+                "        return out;\n" +
+                "    }\n" +
+                "    std::string to_string() {\n" +
+                "        std::stringstream s; s << *this; return s.str();\n" +
+                "    }\n",
+                name,
+                tokens.size(),
+                values
+            );
     }
 
     private CharSequence generatePrimitivePropertyEncodings(

@@ -97,7 +97,8 @@ public class SbeTool
     /**
      * String system property of the namespace for generated code.
      */
-    public static final String TARGET_NAMESPACE = "sbe.target.namespace";
+    public static final String TARGET_NAMESPACE  = "sbe.target.namespace";
+    public static final String TARGET_NAMESPACE1 = "sbe.target.namespace1";
 
     /**
      * Specifies the name of the Java buffer to wrap
@@ -129,7 +130,16 @@ public class SbeTool
                     validateAgainstSchema(fileName, xsdFilename);
                 }
 
-                ir = new IrGenerator().generate(parseSchema(fileName), System.getProperty(TARGET_NAMESPACE));
+                String namespaceName = System.getProperty(TARGET_NAMESPACE);
+                if (namespaceName == null)
+                    namespaceName  = System.getProperty(TARGET_NAMESPACE1);
+                if (namespaceName == null)
+                {
+                    System.err.format("Parameter %s not found!\n", TARGET_NAMESPACE);
+                    System.exit(-1);
+                }
+
+                ir = new IrGenerator().generate(parseSchema(fileName), namespaceName);
             }
             else if (fileName.endsWith(".sbeir"))
             {
