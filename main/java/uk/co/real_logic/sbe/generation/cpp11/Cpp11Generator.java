@@ -64,6 +64,7 @@ public class Cpp11Generator implements CodeGenerator
     private final boolean       withUtxx;
     private final boolean       skipEnum255;
     private final boolean       sbeHppGenerate;
+    private final boolean       debug;
 
     public Cpp11Generator(final Ir ir, final String subdir, final OutputManager outputManager)
         throws IOException
@@ -95,6 +96,8 @@ public class Cpp11Generator implements CodeGenerator
         this.useDescrForClassName = val != null && val.equalsIgnoreCase("true");
         val                       = System.getProperty("sbe.target.WithMsgHeaderStub"); // Generate MessageHeader.hpp
         this.withMsgHeaderStub    = val == null || !val.equalsIgnoreCase("false");
+        val                       = System.getProperty("debug");
+        this.debug                = val != null && val.equalsIgnoreCase("true");
         this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
         this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "HAS_SEQNO" method
         this.genUUIDMethod        = System.getProperty("sbe.target.GenUUIDMethod");     // Add "HAS_UUID" const and method
@@ -171,25 +174,54 @@ public class Cpp11Generator implements CodeGenerator
     public List<String> generateTypeStubs() throws IOException
     {
         final List<String> typesToInclude = new ArrayList<>();
+        final String       fileName       = "AAAEnums";
+
+        // Generate a single file with ENUMs?
+        if (this.withUtxx)
+            try (final Writer out = outputManager.createOutput(fileName))
+            {
+                typesToInclude.add(fileName);
+                out.append(generateEnumFileHeader(fileName));
+
+                for (final List<Token> tokens : ir.types())
+                    switch (tokens.get(0).signal())
+                    {
+                        case BEGIN_ENUM:
+                        {
+                            final String enumName = formatClassName(tokens.get(0).name());
+                            generateEnum(enumName, tokens.get(0), tokens, out);
+                            out.append("\n");
+                            break;
+                        }
+                    }
+
+                fileEndIfdef(out, fileName, true);
+            }
 
         for (final List<Token> tokens : ir.types())
         {
-            switch (tokens.get(0).signal())
+            final Token token = tokens.get(0);
+            switch (token.signal())
             {
                 case BEGIN_ENUM:
-                    generateEnum(tokens);
+                    if (!this.withUtxx)
+                    {
+                        generateEnum(tokens);
+                        typesToInclude.add(token.name());
+                    }
                     break;
 
                 case BEGIN_SET:
                     generateChoiceSet(tokens);
+                    typesToInclude.add(token.name());
                     break;
 
                 case BEGIN_COMPOSITE:
                     generateComposite(tokens);
+                    typesToInclude.add(token.name());
                     break;
             }
 
-            typesToInclude.add(tokens.get(0).name());
         }
 
         return typesToInclude;
@@ -748,16 +780,26 @@ public class Cpp11Generator implements CodeGenerator
         }
     }
 
+    private void generateEnum(final String enumName, final Token enumToken,
+                              final List<Token> tokens, final Writer out) throws IOException
+    {
+        if (!this.withUtxx)
+            out.append(generateEnumFileHeader(enumName));
+
+        out.append(generateEnumDeclaration(enumName, enumToken, tokens.subList(1, tokens.size() - 1)));
+
+        if (!this.withUtxx)
+            fileEndIfdef(out, enumName, true);
+    }
+
     private void generateEnum(final List<Token> tokens) throws IOException
     {
         final Token enumToken = tokens.get(0);
-        final String enumName = formatClassName(tokens.get(0).name());
+        final String enumName = formatClassName(enumToken.name());
 
         try (final Writer out = outputManager.createOutput(enumName))
         {
-            out.append(generateEnumFileHeader(enumName));
-            out.append(generateEnumDeclaration(enumName, enumToken, tokens.subList(1, tokens.size() - 1)));
-            fileEndIfdef(out, enumName, true);
+            generateEnum(enumName, enumToken, tokens, out);
         }
     }
 
@@ -784,6 +826,8 @@ public class Cpp11Generator implements CodeGenerator
 
             out.append("};\n\n");
 
+            if (this.debug)
+                System.out.println(String.format("Composite type: %s\n", className));
             fileEndIfdef(out, className, true);
         }
     }
