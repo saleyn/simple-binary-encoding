@@ -62,6 +62,7 @@ public class Cpp11Generator implements CodeGenerator
     private final String        genUUIDMethod;
     private final boolean       withMsgHeaderStub;
     private final boolean       withUtxx;
+    private final boolean       isMktData;
     private final boolean       skipEnum255;
     private final boolean       sbeHppGenerate;
     private final boolean       debug;
@@ -101,6 +102,8 @@ public class Cpp11Generator implements CodeGenerator
         this.genPossDupMethod     = System.getProperty("sbe.target.GenPossDupMethod");  // Add "PossDupFlag" method
         this.genSeqnoMethod       = System.getProperty("sbe.target.GenSeqnoMethod");    // Add "HAS_SEQNO" method
         this.genUUIDMethod        = System.getProperty("sbe.target.GenUUIDMethod");     // Add "HAS_UUID" const and method
+        val                       = System.getProperty("sbe.target.IsMDP3");
+        this.isMktData            = val != null && val.equalsIgnoreCase("true");
     }
 
     public String uncamelName(final String name)
@@ -302,11 +305,18 @@ public class Cpp11Generator implements CodeGenerator
                        ;
                 }
 
-                out.append(generateFields(className, rootFields, BASE_INDENT, fields));
+                final StringBuilder sb = new StringBuilder();
+
+                final List<Token> fldTokens = new ArrayList<>();
+                sb.append(generateFields(className, rootFields, BASE_INDENT, fields, fldTokens));
 
                 final List<Token> groups = new ArrayList<>();
                 offset = collectGroups(messageBody, offset, groups);
-                StringBuilder sb = new StringBuilder();
+
+                int ff = getFieldFlags(false, fldTokens)
+                       | getFieldFlags(true,  groups);
+                generateFieldFlags(sb, ff, "");
+
                 generateGroups(sb, groups, 0, BASE_INDENT, fields);
                 out.append(sb);
 
@@ -355,6 +365,91 @@ public class Cpp11Generator implements CodeGenerator
         {
             generateMessagesFile(messages);
         }
+    }
+
+    private static final int HasSecID       = 1 << 0;
+    private static final int HasTransTime   = 1 << 1;
+    private static final int HasNoMDEntries = 1 << 2;
+    private static final int HasRptSeq      = 1 << 3;
+    private static final int HasLastMSNProc = 1 << 4;
+    private static final int HasNoRelSym    = 1 << 5;
+
+    private int getFieldFlags(boolean isGroup, final List<Token> fields)
+    {
+        int res = 0;
+
+        if (this.isMktData)
+        {
+            if (isGroup)
+            {
+                for (final Token t : fields)
+                {
+                    if (t.name().equals("NoMDEntries"))
+                    {
+                        res |= HasNoMDEntries;
+                        break;
+                    }
+                    if (t.name().equals("NoRelatedSym"))
+                    {
+                        res |= HasNoRelSym;
+                        break;
+                    }
+                }
+           }
+            else
+            {
+                for (final Token t : fields)
+                {
+                    if (t.name().equals("RptSeq"))
+                    {
+                        res |= HasRptSeq;
+                        break;
+                    }
+                }
+                for (final Token t : fields)
+                {
+                    if (t.name().equals("SecurityID"))
+                    {
+                        res |= HasSecID;
+                        break;
+                    }
+                }
+                for (final Token t : fields)
+                {
+                    if (t.name().equals("TransactTime"))
+                    {
+                        res |= HasTransTime;
+                        break;
+                    }
+                }
+                for (final Token t : fields)
+                {
+                    if (t.name().equals("LastMsgSeqNumProcessed"))
+                    {
+                        res |= HasLastMSNProc;
+                        break;
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    private void generateFieldFlags(final StringBuilder out, int flags, final String indent)
+    {
+        final java.util.StringJoiner joiner = new java.util.StringJoiner("\n"+indent+"        |", " ", "");
+
+        if ((flags & HasSecID)       != 0) joiner.add("FieldFlags::HasSecID");
+        if ((flags & HasTransTime)   != 0) joiner.add("FieldFlags::HasTransTime");
+        if ((flags & HasNoMDEntries) != 0) joiner.add("FieldFlags::HasNoMDEntries");
+        if ((flags & HasRptSeq)      != 0) joiner.add("FieldFlags::HasRptSeq");
+        if ((flags & HasNoRelSym)    != 0) joiner.add("FieldFlags::HasNoRelSym");
+
+        out.append(String.format(
+            indent + "    static constexpr unsigned FIELD_FLAGS =\n" +
+            indent + "        %s;\n\n",
+            flags == 0 ? "0" : joiner.toString()
+        ));
     }
 
     private int collectRootFields(final List<Token> tokens, int index, final List<Token> rootFields)
@@ -409,9 +504,15 @@ public class Cpp11Generator implements CodeGenerator
                 generateGroupClassHeader(sb, groupName, tokens, index, indent + INDENT);
 
                 final List<Token> rootFields = new ArrayList<>();
-                final NodeList groupFields = new NodeList();
+                final NodeList   groupFields = new NodeList();
                 index = collectRootFields(tokens, ++index, rootFields);
-                sb.append(generateFields(groupName, rootFields, indent + INDENT, groupFields));
+
+                final List<Token> fldTokens = new ArrayList<>();
+                sb.append(generateFields(groupName, rootFields, indent + INDENT, groupFields, fldTokens));
+
+                int ff = getFieldFlags(false, rootFields)
+                       | getFieldFlags(true,  fldTokens);
+                generateFieldFlags(sb, ff, indent+INDENT);
 
                 if (tokens.get(index).signal() == Signal.BEGIN_GROUP)
                 {
@@ -852,18 +953,7 @@ public class Cpp11Generator implements CodeGenerator
 
         if (isGroup)
         {
-            boolean hasSID = false;
-            for (final Node node : fields)
-            {
-                if (node.name.equals("securityID"))
-                {
-                    hasSID = true;
-                    break;
-                }
-            }
-
             sb.append(String.format(
-                indent + "    static constexpr bool HasSecurityID() { return %4$s; }\n\n" +
                 indent + "    std::string InfoGrpSep() {\n" +
                 indent + "        std::stringstream s;\n" +
                 indent + "        s << '|' << std::setw(%1$d) << ' ';\n" +
@@ -878,24 +968,12 @@ public class Cpp11Generator implements CodeGenerator
                 indent + "    }\n\n",
                 TAG_PRINT_WIDTH,
                 TYPE_PRINT_WIDTH,
-                NAME_PRINT_WIDTH,
-                hasSID ? "true" : "false"
+                NAME_PRINT_WIDTH
             ));
         }
         else
         {
-            boolean hasTransactTime = false;
-            for (final Node node : fields)
-            {
-                if (node.name.equals("transactTime"))
-                {
-                    hasTransactTime = true;
-                    break;
-                }
-            }
-
             sb.append(String.format(
-                indent + "    static constexpr bool HasTransactTime() { return %3$s; }\n\n" +
                 indent + "    std::string InfoMsgHeader() const {\n" +
                 indent + "        std::stringstream s;\n" +
                 indent + "        s << Name();\n" +
@@ -919,8 +997,7 @@ public class Cpp11Generator implements CodeGenerator
                 indent + "        return s.str();\n" +
                 indent + "    }\n",
                 TYPE_PRINT_WIDTH,
-                NAME_PRINT_WIDTH,
-                hasTransactTime ? "true" : "false"
+                NAME_PRINT_WIDTH
             ));
         }
         return generateStreamPrint2(sb, isGroup, name, fields, indent);
@@ -955,7 +1032,7 @@ public class Cpp11Generator implements CodeGenerator
             indent + "    template <class Visitor>\n" +
             indent + "    bool Visit(Visitor& visitor) {\n" +
             (hasGroups ? indent + "        bool printed = false;\n" : "") +
-            indent + "        if (!visitor(std::make_tuple(%3$s, VisitInfo::Header, this))) return false;\n",
+            indent + "        if (!visitor(VisitMeta<%3$s, VisitInfo::Header>(), this)) return false;\n",
             name,
             isGroup ? "group" : "message",
             isGroup ? "VisitItem::Grp" : "VisitItem::Msg"
@@ -968,7 +1045,7 @@ public class Cpp11Generator implements CodeGenerator
                 sb.append(String.format(
                     indent + "        for(auto& g = %1$s(); g.HasNext();) {\n" +
                     indent + "            auto& grp = g.Next();\n" +
-                    indent + "            if (!visitor(std::make_tuple(VisitItem::Grp,VisitInfo::Detail,&grp))) return false;\n"+
+                    indent + "            if (!visitor(VisitMeta<VisitItem::Grp,VisitInfo::Detail>(),&grp)) return false;\n"+
                     indent + "            printed = true;\n" +
                     indent + "        }\n" +
                     indent + "        if (printed) return true;\n",
@@ -979,7 +1056,7 @@ public class Cpp11Generator implements CodeGenerator
 
         sb.append(String.format(
             indent + "        NoGroups grp;\n" +
-            indent + "        return visitor(std::make_tuple(VisitItem::Grp, VisitInfo::Detail, &grp));\n" +
+            indent + "        return visitor(VisitMeta<VisitItem::Grp, VisitInfo::Detail>(), &grp);\n" +
             indent + "    }\n\n" +
             indent + "    // Print method for non-group fields in the %1$s %2$s\n" +
             indent + "    template <class Stream>\n" +
@@ -1542,13 +1619,12 @@ public class Cpp11Generator implements CodeGenerator
             out.append(withUtxx ? "#include <utxx/error.hpp>\n\n" : "\n");
 
             StringBuilder sb = new StringBuilder();
-            addNamespaces(sb, 1);
+            addNamespaces(sb, 2);
             out.append(sb.toString());
 
             out.append(String.format(
                 "    /// Base class for all derived protocol messages\n" +
                 "    class %1$s {};\n\n" +
-                "    using sbe::MetaAttribute;\n\n" +
                 "    inline const char* MetaAttrStr(MetaAttribute a, const char* s1, const char* s2, const char* s3) {\n" +
                 "        const char* vals[] = {s1, s2, s3};\n" +
                 "        assert(std::size_t(MetaAttribute::__TOTAL) == (sizeof(vals) / sizeof(vals[0])));\n" +
@@ -1559,15 +1635,28 @@ public class Cpp11Generator implements CodeGenerator
                 "    inline std::string ToString(char  a) { return std::string(1, a); }\n" +
                 "    inline std::string ToString(char* a) { return a; }\n" +
                 "    inline std::string ToString(const char* a)        { return a; }\n" +
-                "    inline std::string ToString(int id, const char* a, int max_len){ return sbe::PrintableOutput(id, a, max_len); }\n" +
+                "    inline std::string ToString(int id, const char* a, int max_len){ return PrintableOutput(id, a, max_len); }\n" +
                 "    inline std::string ToString(const std::string& a) { return a; }\n" +
                 "    enum class VisitItem { Msg, Grp };\n\n" +
                 "    enum class VisitInfo { Header, Detail };\n\n" +
+                "    template <VisitItem IT, VisitInfo IN>\n" +
+                "    struct VisitMeta {\n" +
+                "        static constexpr VisitItem Item   = IT;\n" +
+                "        static constexpr VisitInfo Detail = IN;\n" +
+                "    };\n\n" +
+                "    enum class FieldFlags {\n" +
+                "        HasSecID       = 1 << 0,\n" +
+                "        HasTransTime   = 1 << 1,\n" +
+                "        HasNoMDEntries = 1 << 2,\n" +
+                "        HasRptSeq      = 1 << 3,\n" +
+                "        HasLastMSNProc = 1 << 4,\n" +
+                "        HasNoRelSym    = 1 << 5,\n" +
+                "    };\n\n" +
                 "    struct NoGroups {};\n\n",
                 msgBaseClassName()
             ));
 
-            this.closeNamespaces(out, innerNamespace, 1);
+            this.closeNamespaces(out, innerNamespace, 2);
         }
     }
 
@@ -2165,7 +2254,8 @@ public class Cpp11Generator implements CodeGenerator
     }
 
     private CharSequence generateFields(final String containingClassName,
-        final List<Token> tokens, final String indent, final NodeList fields)
+        final List<Token> tokens, final String indent, final NodeList fields,
+        final List<Token> fldTokens)
     {
         final StringBuilder sb = new StringBuilder();
 
@@ -2203,6 +2293,7 @@ public class Cpp11Generator implements CodeGenerator
                         if (Encoding.Presence.CONSTANT != encodingToken.encoding().presence())
                         {
                             fields.add(propertyName, encodingToken);
+                            fldTokens.add(signalToken);
                         }
                         sb.append(generatePrimitiveProperty(containingClassName, propertyName, encodingToken, indent));
                         break;
