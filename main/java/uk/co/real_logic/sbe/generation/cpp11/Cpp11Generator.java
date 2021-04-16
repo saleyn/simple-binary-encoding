@@ -324,7 +324,7 @@ public class Cpp11Generator implements CodeGenerator
                 final List<String> varLenMembers = new ArrayList<String>();
                 final CharSequence varDataStr    = generateVarData(varData, fields, varLenMembers);
 
-                out.append("\n    static int VarHeaderLen() {");
+                out.append("\n    static constexpr int VarHeaderLen() {");
                 if (varLenMembers.size() == 0)
                     out.append(" return 0; }\n\n");
                 else {
@@ -437,6 +437,9 @@ public class Cpp11Generator implements CodeGenerator
 
     private void generateFieldFlags(final StringBuilder out, int flags, final String indent)
     {
+        if (!this.isMktData)
+            return;
+
         final java.util.StringJoiner joiner = new java.util.StringJoiner("\n"+indent+"        |", " ", "");
 
         if ((flags & HasSecID)       != 0) joiner.add("FieldFlags::HasSecID");
@@ -1644,16 +1647,19 @@ public class Cpp11Generator implements CodeGenerator
                 "        static constexpr VisitItem Item   = IT;\n" +
                 "        static constexpr VisitInfo Detail = IN;\n" +
                 "    };\n\n" +
-                "    enum class FieldFlags {\n" +
-                "        HasSecID       = 1 << 0,\n" +
-                "        HasTransTime   = 1 << 1,\n" +
-                "        HasNoMDEntries = 1 << 2,\n" +
-                "        HasRptSeq      = 1 << 3,\n" +
-                "        HasLastMSNProc = 1 << 4,\n" +
-                "        HasNoRelSym    = 1 << 5,\n" +
-                "    };\n\n" +
-                "    struct NoGroups {};\n\n",
-                msgBaseClassName()
+                "    struct NoGroups {};\n\n" +
+                "%2$s",
+                msgBaseClassName(),
+                this.isMktData ?
+                  "    enum class FieldFlags {\n" +
+                  "        HasSecID       = 1 << 0,\n" +
+                  "        HasTransTime   = 1 << 1,\n" +
+                  "        HasNoMDEntries = 1 << 2,\n" +
+                  "        HasRptSeq      = 1 << 3,\n" +
+                  "        HasLastMSNProc = 1 << 4,\n" +
+                  "        HasNoRelSym    = 1 << 5,\n" +
+                  "    };\n\n"
+                : ""
             ));
 
             this.closeNamespaces(out, innerNamespace, 2);
